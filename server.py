@@ -1250,24 +1250,34 @@ def _auction_log_add(instrument_id, raw_api_data, bids_parsed, asks_parsed,
     bids_clean = parse_side(bids_parsed)
     asks_clean = parse_side(asks_parsed)
 
-    # ── Обновляем «последнее предсказание» для этого инструмента ──
+    # ── Снимок для кольцевого буфера последних N тиков ──
+    snapshot = {
+        "ts":         now,
+        "ts_str":     ts_str,
+        "calc_price": round(calc_price, 4) if calc_price else None,
+        "executed":   executed,
+        "imbalance":  imbalance,
+        "direction":  direction,
+        "ref_price":  ref_price,
+        "best_bid":   bids_clean[0]["p"] if bids_clean else None,
+        "best_ask":   asks_clean[0]["p"] if asks_clean else None,
+        "n_bids":     len(bids_clean),
+        "n_asks":     len(asks_clean),
+        "bids":       bids_clean,
+        "asks":       asks_clean,
+        "api_meta":   api_meta,
+    }
+
+    # ── Обновляем предсказание + кольцевой буфер последних 10 снимков ──
     with _auction_predictions_lock:
+        prev = _auction_predictions.get(instrument_id, {})
+        last_snapshots = prev.get("last_snapshots", [])
+        last_snapshots.append(snapshot)
+        if len(last_snapshots) > 10:          # храним последние 10 тиков
+            last_snapshots = last_snapshots[-10:]
         _auction_predictions[instrument_id] = {
-            "ts": now,
-            "ts_str": ts_str,
-            "calc_price":  round(calc_price, 4) if calc_price else None,
-            "executed":    executed,
-            "imbalance":   imbalance,
-            "direction":   direction,
-            "ref_price":   ref_price,
-            "n_bids":      len(bids_clean),
-            "n_asks":      len(asks_clean),
-            "best_bid":    bids_clean[0]["p"]  if bids_clean else None,
-            "best_ask":    asks_clean[0]["p"]  if asks_clean else None,
-            "api_meta":    api_meta,
-            # Сырые биды/аски (последний снимок)
-            "bids":        bids_clean,
-            "asks":        asks_clean,
+            **snapshot,                        # все поля последнего снимка
+            "last_snapshots": last_snapshots,  # + история последних 10
         }
 
     # ── Сырой журнал снимков (для отладки) ──
@@ -1341,6 +1351,8 @@ def _capture_auction_results(session_label):
             "actual_price":     round(actual_price, 4) if actual_price else None,
             "actual_volume":    actual_volume,
             "diff_pct":         diff_pct,
+            # Последние 10 снимков стакана перед закрытием аукциона
+            "last_snapshots":   pred.get("last_snapshots", []),
         })
         logger.info(
             "Auction result %s: predicted=%.2f actual=%s diff=%s%%",

@@ -1002,8 +1002,10 @@
               const diffColor = diff == null ? 'var(--muted)' : Math.abs(diff)<0.1 ? 'var(--accent)' : Math.abs(diff)<0.5 ? '#ff9800' : 'var(--negative)';
               const diffStr = diff == null ? '—' : (diff>0?'+':'')+diff+'%';
               const noFact = r.actual_price == null;
+              const snapId = 'snaps_' + (sess+i).replace(/\W/g,'_');
+              const hasSnaps = r.last_snapshots && r.last_snapshots.length;
               html += `<tr style="background:${i%2?'#1e2128':'#252830'};">
-                <td style="padding:0.28rem 0.5rem;font-weight:600;">${r.name||r.instrument_id.slice(0,10)}</td>
+                <td style="padding:0.28rem 0.5rem;font-weight:600;">${r.name||r.instrument_id.slice(0,10)}${hasSnaps?` <span onclick="var e=document.getElementById('${snapId}');e.style.display=e.style.display==='none'?'table-row':'none'" style="cursor:pointer;color:var(--muted);font-size:0.75rem;user-select:none;" title="показать снимки стакана">▼</span>`:''}</td>
                 <td style="padding:0.28rem 0.5rem;text-align:right;color:var(--accent);font-weight:700;">${r.predicted_price??'—'}</td>
                 <td style="padding:0.28rem 0.5rem;text-align:right;color:var(--muted);">${r.predicted_exec??'—'}</td>
                 <td style="padding:0.28rem 0.5rem;text-align:right;color:var(--muted);">${r.predicted_imb??'—'} ${r.direction?'('+r.direction+')':''}</td>
@@ -1013,6 +1015,24 @@
                 <td style="padding:0.28rem 0.5rem;text-align:right;font-size:0.82rem;color:var(--muted);">${r.last_bid??'—'} / ${r.last_ask??'—'}</td>
                 <td style="padding:0.28rem 0.5rem;text-align:right;font-size:0.82rem;color:var(--muted);">${r.ts_str}</td>
               </tr>`;
+              if (hasSnaps) {
+                const snapsHtml = r.last_snapshots.map(s => {
+                  const mkTbl = (arr, color) => arr.slice(0,5).map(x=>`<span style="color:${color}">${x.p}</span>×${x.q}`).join(' ');
+                  return `<div style="background:#252830;padding:0.2rem 0.45rem;border-radius:3px;margin-bottom:0.1rem;font-size:0.79rem;">
+                    <span style="color:var(--muted)">${s.ts_str}</span>
+                    &nbsp;<b style="color:var(--accent)">${s.calc_price??'нет'}</b>
+                    &nbsp;исп:${s.executed??'—'} дисб:${s.imbalance??'—'}${s.direction?' ('+s.direction+')':''}
+                    &nbsp;<span style="color:var(--accent)">${mkTbl(s.bids||[],'var(--accent)')}</span>
+                    &nbsp;|&nbsp;<span style="color:var(--negative)">${mkTbl(s.asks||[],'var(--negative)')}</span>
+                  </div>`;
+                }).join('');
+                html += `<tr id="${snapId}" style="display:none;background:${i%2?'#181b21':'#1c1f26'};">
+                  <td colspan="9" style="padding:0.3rem 0.75rem 0.5rem;">
+                    <div style="font-size:0.79rem;color:var(--muted);margin-bottom:0.2rem;">📸 Последние ${r.last_snapshots.length} снимков стакана перед закрытием аукциона:</div>
+                    ${snapsHtml}
+                  </td>
+                </tr>`;
+              }
             });
             html += '</tbody></table></div>';
           }
