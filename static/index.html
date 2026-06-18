@@ -276,6 +276,28 @@
     <div style="margin-bottom:0.65rem;font-size:0.78rem;color:var(--muted);">Токены хранятся только в вашем браузере. Нажмите «Сохранить токены» после изменений.</div>
     <div id="apiKeysList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:0.3rem;margin-bottom:0.75rem;"></div>
     <button type="button" onclick="saveApiKeyFields(this)">Сохранить токены</button>
+
+    <hr style="border-color:var(--border);margin:1rem 0;">
+    <h2 style="margin-bottom:0.4rem;">Настройки обновления <small style="color:var(--muted);font-weight:normal;">профиль: <span id="profileNameInRefreshSettings"></span></small></h2>
+    <div style="margin-bottom:0.6rem;font-size:0.78rem;color:var(--muted);">Настройки сохраняются в браузере отдельно для каждого профиля.</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:0.75rem;margin-bottom:0.75rem;">
+      <div>
+        <div style="font-size:0.78rem;color:var(--muted);margin-bottom:0.35rem;">Интервал во время аукциона (сек)</div>
+        <input type="number" id="settingAuctionInterval" min="1" max="60" step="1" value="4"
+          style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:0.35rem 0.55rem;font-size:0.9rem;">
+      </div>
+      <div>
+        <div style="font-size:0.78rem;color:var(--muted);margin-bottom:0.35rem;">Интервал в обычное время (мин)</div>
+        <input type="number" id="settingNormalInterval" min="1" max="1440" step="1" value="60"
+          style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:0.35rem 0.55rem;font-size:0.9rem;">
+      </div>
+      <div>
+        <div style="font-size:0.78rem;color:var(--muted);margin-bottom:0.35rem;">Максимум инструментов (до 40)</div>
+        <input type="number" id="settingMaxInstruments" min="1" max="40" step="1" value="40"
+          style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:0.35rem 0.55rem;font-size:0.9rem;">
+      </div>
+    </div>
+    <button type="button" onclick="saveUserSettings(this)">Сохранить настройки</button>
   </div>
   <div class="table-wrap">
     <table id="mainTable">
@@ -310,9 +332,22 @@
     const CURRENT_PROFILE = getProfileFromUrl();
     const STORAGE_IDS = 'damir_futures_selected_ids_' + CURRENT_PROFILE;
     const STORAGE_NAMES = 'damir_futures_names'; // Общий для всех профилей
-    const AUTO_REFRESH_INTERVAL_AUCTION = 4000; // 4 секунды во время аукциона
-    const AUTO_REFRESH_INTERVAL_NORMAL = 60 * 60 * 1000; // 60 минут обычно
-    const MAX_INSTRUMENTS_LIMIT = 40; // Жёсткий лимит инструментов в одном запросе
+    // Настройки по умолчанию — могут быть переопределены пользователем через UI
+    let AUTO_REFRESH_INTERVAL_AUCTION = 4000; // 4 секунды во время аукциона
+    let AUTO_REFRESH_INTERVAL_NORMAL = 60 * 60 * 1000; // 60 минут обычно
+    let MAX_INSTRUMENTS_LIMIT = 40; // Жёсткий лимит инструментов в одном запросе
+
+    // ===== Пользовательские настройки (хранятся в localStorage, отдельно для каждого профиля) =====
+    const STORAGE_USER_SETTINGS = 'widget_user_settings_' + CURRENT_PROFILE;
+
+    function loadUserSettings() {
+      try { return JSON.parse(localStorage.getItem(STORAGE_USER_SETTINGS) || '{}'); } catch { return {}; }
+    }
+    let userSettings = loadUserSettings();
+    // Применяем сохранённые значения поверх дефолтов
+    if (userSettings.auctionInterval) AUTO_REFRESH_INTERVAL_AUCTION = userSettings.auctionInterval * 1000;
+    if (userSettings.normalInterval)  AUTO_REFRESH_INTERVAL_NORMAL  = userSettings.normalInterval * 60 * 1000;
+    if (userSettings.maxInstruments)  MAX_INSTRUMENTS_LIMIT          = userSettings.maxInstruments;
     
     // Уникальный ID сессии для статистики
     const SESSION_ID = 'session_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
@@ -689,6 +724,47 @@
     }
     function addApiKey() {}
     function deleteApiKey(i) {}
+
+    // ===== Настройки обновления =====
+    function renderUserSettings() {
+      const aEl = document.getElementById('settingAuctionInterval');
+      const nEl = document.getElementById('settingNormalInterval');
+      const mEl = document.getElementById('settingMaxInstruments');
+      if (aEl) aEl.value = (userSettings.auctionInterval) || (AUTO_REFRESH_INTERVAL_AUCTION / 1000);
+      if (nEl) nEl.value = (userSettings.normalInterval) || (AUTO_REFRESH_INTERVAL_NORMAL / 60000);
+      if (mEl) mEl.value = (userSettings.maxInstruments) || MAX_INSTRUMENTS_LIMIT;
+    }
+
+    function saveUserSettings(btn) {
+      const auctionSec = parseInt(document.getElementById('settingAuctionInterval')?.value, 10) || 4;
+      const normalMin  = parseInt(document.getElementById('settingNormalInterval')?.value, 10)  || 60;
+      const maxInstr   = parseInt(document.getElementById('settingMaxInstruments')?.value, 10)  || 40;
+
+      userSettings = {
+        auctionInterval: Math.max(1, Math.min(60, auctionSec)),
+        normalInterval:  Math.max(1, Math.min(1440, normalMin)),
+        maxInstruments:  Math.max(1, Math.min(40, maxInstr)),
+      };
+      localStorage.setItem(STORAGE_USER_SETTINGS, JSON.stringify(userSettings));
+
+      // Применяем сразу
+      AUTO_REFRESH_INTERVAL_AUCTION = userSettings.auctionInterval * 1000;
+      AUTO_REFRESH_INTERVAL_NORMAL  = userSettings.normalInterval  * 60 * 1000;
+      MAX_INSTRUMENTS_LIMIT         = userSettings.maxInstruments;
+
+      updateAutoStatusText();
+      updateLimitWarning();
+      // Перезапускаем авто-обновление с новыми интервалами
+      if (autoRefreshEnabled) { stopAutoRefresh(); startAutoRefresh(); }
+
+      if (btn) {
+        const orig = btn.textContent;
+        btn.textContent = 'Сохранено ✓';
+        btn.style.background = 'var(--accent)';
+        btn.style.color = '#000';
+        setTimeout(() => { btn.textContent = orig; btn.style.background = ''; btn.style.color = ''; }, 1500);
+      }
+    }
 
     function fetchWithTimeout(url, ms) {
       const ctrl = new AbortController();
@@ -1236,9 +1312,13 @@
         if (panel.style.display === 'none') return;
         // Рендерим список API ключей
         renderApiKeys();
+        // Заполняем поля настроек обновления
+        renderUserSettings();
         // Показываем название профиля в настройках
         const profileNameEl = document.getElementById('profileNameInSettings');
         if (profileNameEl) profileNameEl.textContent = CURRENT_PROFILE;
+        const profileNameRefEl = document.getElementById('profileNameInRefreshSettings');
+        if (profileNameRefEl) profileNameRefEl.textContent = CURRENT_PROFILE;
         const searchEl = document.getElementById('searchInput');
         if (searchEl) searchEl.value = '';
         if (allFutures.length === 0) {
@@ -1349,9 +1429,13 @@
       const status = document.getElementById('autoStatus');
       const interval = getRefreshInterval();
       if (interval === AUTO_REFRESH_INTERVAL_AUCTION) {
-        status.textContent = 'обновление каждые 4 сек (аукцион)';
+        const secs = AUTO_REFRESH_INTERVAL_AUCTION / 1000;
+        status.textContent = 'обновление каждые ' + secs + ' сек (аукцион)';
       } else {
-        status.textContent = 'обновление каждый час';
+        const mins = AUTO_REFRESH_INTERVAL_NORMAL / 60000;
+        status.textContent = mins >= 60
+          ? 'обновление каждые ' + Math.round(mins / 60) + ' ч'
+          : 'обновление каждые ' + mins + ' мин';
       }
     }
 
