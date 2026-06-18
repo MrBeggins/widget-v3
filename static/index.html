@@ -1,0 +1,1455 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <title>Виджет — Таблица инструментов | Т-Инвестиции</title>
+  <style>
+    :root {
+      --bg: #1a1d23;
+      --card: #252830;
+      --text: #e6e8ec;
+      --muted: #8b8f99;
+      --accent: #00c853;
+      --negative: #ff5252;
+      --border: #3a3e48;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 1rem;
+      min-height: 100vh;
+    }
+    h1 { font-size: 1.25rem; margin: 0 0 1rem; color: var(--muted); }
+    .toolbar {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+      margin-bottom: 1rem;
+      flex-wrap: wrap;
+      position: sticky;
+      top: 0;
+      z-index: 9999;
+      background: var(--bg);
+      padding: 0.25rem 0;
+    }
+    .toolbar button { position: relative; z-index: 1; cursor: pointer; pointer-events: auto !important; }
+    button {
+      background: var(--card);
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+    button:hover { background: #2d3139; }
+    button.active { background: var(--accent); color: #000; }
+    .auto-status {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-left: 0.5rem;
+    }
+    .auto-status.active { color: var(--accent); }
+    .table-wrap {
+      overflow-x: auto;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--card);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+    }
+    th, td {
+      padding: 0.6rem 0.8rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    th {
+      color: var(--muted);
+      font-weight: 600;
+      cursor: pointer;
+      user-select: none;
+    }
+    th:hover { color: var(--accent); }
+    th .sort-icon { margin-left: 0.3rem; font-size: 0.7rem; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,0.03); }
+    .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .pct-positive { color: var(--accent); }
+    .pct-negative { color: var(--negative); }
+    .pct-null { color: var(--muted); }
+    .divergence-panel {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      margin-bottom: 1rem;
+    }
+    .divergence-panel h3 {
+      font-size: 0.9rem;
+      margin: 0 0 0.6rem;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .divergence-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    .divergence-table th { color: var(--muted); font-weight: normal; text-align: left; padding: 0.2rem 0.5rem; border-bottom: 1px solid var(--border); }
+    .divergence-table td { padding: 0.3rem 0.5rem; border-bottom: 1px solid #2a2d35; }
+    .divergence-table tr.alert td { background: rgba(255,82,82,0.08); }
+    .divergence-badge { background: var(--negative); color: #fff; border-radius: 10px; padding: 0.1rem 0.45rem; font-size: 0.75rem; margin-left: 0.4rem; }
+    .div-threshold {
+      font-size: 0.78rem; color: var(--muted); margin-left: auto;
+      display: flex; align-items: center; gap: 0.4rem;
+    }
+    .div-threshold input {
+      width: 52px; background: var(--bg); color: var(--text);
+      border: 1px solid var(--border); border-radius: 4px;
+      padding: 0.15rem 0.35rem; font-size: 0.8rem; text-align: center;
+    }
+    .settings-panel {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem;
+      margin-bottom: 1rem;
+      max-height: 350px;
+      overflow-y: auto;
+    }
+    .settings-panel h2 { font-size: 1rem; margin: 0 0 0.75rem; color: var(--muted); }
+    .settings-toolbar {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .search-input {
+      flex: 1;
+      min-width: 200px;
+      padding: 0.5rem 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 0.9rem;
+    }
+    .search-input::placeholder { color: var(--muted); }
+    .category-filters {
+      display: flex;
+      gap: 0.35rem;
+      flex-wrap: wrap;
+      margin-bottom: 0.75rem;
+    }
+    .category-btn {
+      padding: 0.35rem 0.7rem;
+      font-size: 0.8rem;
+      border-radius: 4px;
+    }
+    .category-btn.active {
+      background: var(--accent);
+      color: #000;
+      border-color: var(--accent);
+    }
+    .category-count {
+      font-size: 0.7rem;
+      opacity: 0.7;
+      margin-left: 0.25rem;
+    }
+    .settings-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 0.35rem;
+    }
+    label {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+    label:hover { color: var(--accent); }
+    label.hidden { display: none; }
+    .msg {
+      padding: 0.75rem;
+      border-radius: 6px;
+      margin-bottom: 1rem;
+      font-size: 0.9rem;
+    }
+    .msg.error { background: rgba(255,82,82,0.15); color: #ff8a80; }
+    .msg.info { background: rgba(0,200,83,0.1); color: #69f0ae; }
+    .loading { opacity: 0.7; pointer-events: auto; }
+    .last-update { font-size: 0.75rem; color: var(--muted); margin-left: auto; }
+    .auction-badge {
+      background: #ff9800;
+      color: #000;
+      padding: 0.25rem 0.5rem;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      margin-left: 0.5rem;
+      animation: pulse 1s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+    .mode-indicator {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-left: 0.5rem;
+    }
+    .mode-indicator.auction { color: #ff9800; }
+  </style>
+</head>
+<body>
+  <script>document.body.classList.remove('loading'); document.body.dataset.widgetVersion = '5';</script>
+  <h1>Таблица инструментов — Т-Инвестиции <small style="color:var(--muted);font-size:0.7em">v5</small> <span id="profileBadge" style="font-size:0.6em;color:var(--accent);"></span></h1>
+  <div class="toolbar">
+    <button type="button" id="btnRefresh" onclick="location.reload()">Обновить</button>
+    <button type="button" id="btnSettings" onclick="try{if(typeof toggleSettings==='function')toggleSettings();}catch(e){console.error('Settings',e);}">Настройки</button>
+    <button type="button" id="btnAutoRefresh" onclick="try{if(typeof toggleAutoRefresh==='function')toggleAutoRefresh();}catch(e){console.error('Auto',e);}">Авто: ВКЛ</button>
+    <button type="button" id="btnNewProfile" onclick="try{if(typeof createNewProfile==='function')createNewProfile();}catch(e){console.error('Profile',e);}">+ Профиль</button>
+    <span class="auto-status active" id="autoStatus">обновление каждый час</span>
+    <span class="mode-indicator" id="modeIndicator"></span>
+    <span id="auctionBadge"></span>
+    <span class="last-update" id="lastUpdate"></span>
+  </div>
+  <div id="message"></div>
+  <div id="divergencePanel" class="divergence-panel" style="display:none;">
+    <h3>
+      📊 Расхождение акция / фьючерс
+      <span id="divergenceAlertCount" class="divergence-badge" style="display:none;"></span>
+      <span class="div-threshold">
+        Порог:
+        <input type="number" id="divThreshold" value="0.3" min="0.1" max="5" step="0.1">%
+      </span>
+    </h3>
+    <table class="divergence-table">
+      <thead>
+        <tr>
+          <th>Акция</th>
+          <th>% акции</th>
+          <th>Фьючерс</th>
+          <th>% фьюча</th>
+          <th>Расхождение</th>
+        </tr>
+      </thead>
+      <tbody id="divergenceBody"></tbody>
+    </table>
+  </div>
+  <div id="settingsPanel" class="settings-panel" style="display: none;">
+    <h2>Выберите инструменты для отображения <small style="color:var(--muted);font-weight:normal;">(профиль: <span id="profileNameInSettings"></span>, лимит: <span id="limitInfo">0/40</span>)</small></h2>
+    <div id="limitWarning" class="msg error" style="display:none;margin-bottom:0.75rem;"></div>
+    <div class="settings-toolbar">
+      <input type="text" class="search-input" id="searchInput" placeholder="Поиск по названию или тикеру...">
+      <button type="button" id="btnSelectAll" onclick="document.querySelectorAll('#settingsList label:not(.hidden) input[type=checkbox]').forEach(function(cb){cb.checked=true}); if(typeof selectAll==='function')selectAll();">Все</button>
+      <button type="button" id="btnSelectNone" onclick="document.querySelectorAll('#settingsList input[type=checkbox]').forEach(function(cb){cb.checked=false}); if(typeof selectNone==='function')selectNone();">Снять</button>
+      <button type="button" id="btnSelectFiltered" onclick="document.querySelectorAll('#settingsList label:not(.hidden) input[type=checkbox]').forEach(function(cb){cb.checked=true}); if(typeof selectFiltered==='function')selectFiltered();">Выбрать найденные</button>
+    </div>
+    <div class="category-filters" id="categoryFilters">
+      <button type="button" class="category-btn active" data-category="all">Все</button>
+      <button type="button" class="category-btn" data-category="metals">Металлы</button>
+      <button type="button" class="category-btn" data-category="crypto">Крипта</button>
+      <button type="button" class="category-btn" data-category="indices">Индексы</button>
+      <button type="button" class="category-btn" data-category="currencies">Валюты</button>
+      <button type="button" class="category-btn" data-category="commodities">Товары</button>
+      <button type="button" class="category-btn" data-category="stocks">Акции (фьюч)</button>
+      <button type="button" class="category-btn" data-category="shares">Спот</button>
+      <button type="button" class="category-btn" data-category="other">Другое</button>
+    </div>
+    <div class="settings-list" id="settingsList"></div>
+    <div style="margin-top: 0.75rem;">
+      <button type="button" id="btnSaveSettings" onclick="var ids=[]; document.querySelectorAll('#settingsList input[type=checkbox]:checked').forEach(function(cb){ids.push(cb.value);}); localStorage.setItem('damir_futures_selected_ids',JSON.stringify(ids)); document.getElementById('settingsPanel').style.display='none'; if(typeof saveSettings==='function')saveSettings(); else location.reload();">Сохранить</button>
+    </div>
+
+    <hr style="border-color:var(--border);margin:1rem 0;">
+    <h2 style="margin-bottom:0.5rem;">API ключи <small style="color:var(--muted);font-weight:normal;">T-Invest токены для запросов</small></h2>
+    <div id="apiKeysList" style="margin-bottom:0.6rem;"></div>
+    <div style="display:flex;gap:0.5rem;">
+      <input type="password" id="apiKeyInput" placeholder="Вставьте токен T-Invest..." style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:0.4rem 0.7rem;font-size:0.85rem;">
+      <button type="button" onclick="addApiKey()">Добавить</button>
+    </div>
+    <div style="margin-top:0.4rem;font-size:0.78rem;color:var(--muted);">Ключи хранятся только в вашем браузере. Если ключей нет — используется серверный токен.</div>
+  </div>
+  <div class="table-wrap">
+    <table id="mainTable">
+      <thead id="tableHead">
+        <tr>
+          <th data-sort="name">Актив <span class="sort-icon"></span></th>
+          <th class="num" data-sort="close">Цена 5м <span class="sort-icon"></span></th>
+          <th class="num" data-sort="daily_close">Цена д <span class="sort-icon"></span></th>
+          <th class="num" data-sort="auction">Цена аукц. <span class="sort-icon"></span></th>
+          <th class="num" data-sort="deviation">Откл. % <span class="sort-icon"></span></th>
+          <th class="num" data-sort="lots">Лоты <span class="sort-icon"></span></th>
+          <th class="num" data-sort="imbalance">Дисбаланс <span class="sort-icon"></span></th>
+        </tr>
+      </thead>
+      <tbody id="tableBody">
+        <tr><td colspan="7">Загрузка…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <script>
+    // ========== Профили ==========
+    // Профиль определяется через URL: ?profile=metals, ?profile=stocks и т.д.
+    // Каждый профиль сохраняет свои настройки отдельно в localStorage.
+    // Без параметра profile используется профиль "default".
+    
+    function getProfileFromUrl() {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('profile') || 'default';
+    }
+    
+    const CURRENT_PROFILE = getProfileFromUrl();
+    const STORAGE_IDS = 'damir_futures_selected_ids_' + CURRENT_PROFILE;
+    const STORAGE_NAMES = 'damir_futures_names'; // Общий для всех профилей
+    const AUTO_REFRESH_INTERVAL_AUCTION = 4000; // 4 секунды во время аукциона
+    const AUTO_REFRESH_INTERVAL_NORMAL = 60 * 60 * 1000; // 60 минут обычно
+    const MAX_INSTRUMENTS_LIMIT = 40; // Жёсткий лимит инструментов в одном запросе
+    
+    // Уникальный ID сессии для статистики
+    const SESSION_ID = 'session_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+
+    let allFutures = [];
+    let selectedIds = new Set(JSON.parse(localStorage.getItem(STORAGE_IDS) || '[]'));
+    let namesMap = JSON.parse(localStorage.getItem(STORAGE_NAMES) || '{}');
+    let autoRefreshEnabled = true;
+    let autoRefreshTimer = null;
+    let activeCategory = 'all';
+    let currentRows = [];
+    let sortColumn = 'name';
+    let sortDirection = 'asc';
+    let auctionInfo = null;
+    
+    // Показываем название профиля
+    if (CURRENT_PROFILE !== 'default') {
+      document.getElementById('profileBadge').textContent = '[' + CURRENT_PROFILE + ']';
+    }
+    
+    // Функция для создания нового профиля
+    function createNewProfile() {
+      const name = prompt('Введите название профиля (латиницей, без пробелов):', '');
+      if (!name) return;
+      const cleanName = name.toLowerCase().replace(/[^a-z0-9_-]/g, '');
+      if (!cleanName) {
+        alert('Название должно содержать только латинские буквы, цифры, _ или -');
+        return;
+      }
+      const newUrl = window.location.pathname + '?profile=' + cleanName;
+      window.open(newUrl, '_blank');
+    }
+    
+    // Список доступных профилей (из localStorage)
+    function getAvailableProfiles() {
+      const profiles = ['default'];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && key.startsWith('damir_futures_selected_ids_')) {
+          const profile = key.replace('damir_futures_selected_ids_', '');
+          if (profile && !profiles.includes(profile)) {
+            profiles.push(profile);
+          }
+        }
+      }
+      return profiles;
+    }
+
+    // Тикеры фьючерсов на акции (коды фьючерсов отличаются от акций!)
+    const STOCK_TICKERS = [
+      // Фьючерсные коды (короткие и длинные)
+      'SR', 'SBRF',    // Сбербанк
+      'GZ', 'GAZR', 'GAZPF',   // Газпром
+      'LK', 'LKOH',    // Лукойл
+      'RN', 'ROSN',    // Роснефть
+      'VB', 'VTBR',    // ВТБ
+      'GM', 'GMKN',    // Норникель
+      'NK', 'NVTK',    // Новатэк
+      'PZ', 'PLZL', 'PLZLM',   // Полюс
+      'TT', 'TATN', 'TATP',    // Татнефть
+      'TN', 'TRNF',    // Транснефть
+      'SN', 'SNGS',    // Сургутнефтегаз
+      'SP', 'SNGSP',   // Сургут-п
+      'BN', 'BANE',    // Башнефть
+      'SG', 'SIBN',    // Газпромнефть
+      'RF', 'RNFT',    // Русснефть
+      'YN', 'YNDX', 'YDEX',    // Яндекс
+      'MT', 'MTSS',    // МТС
+      'MG', 'MAGN',    // ММК
+      'NM', 'NLMK',    // НЛМК
+      'CH', 'CHMF',    // Северсталь
+      'AL', 'ALRS',    // АЛРОСА
+      'AF', 'AFLT', 'AFKS',    // Аэрофлот, АФК Система
+      'ME', 'MOEX',    // Мосбиржа
+      'TC', 'TCSG',    // Тинькофф
+      'RL', 'RUAL',    // РУСАЛ
+      'PK', 'PIKK',    // ПИК
+      'MN', 'MGNT',    // Магнит
+      'PH', 'PHOR',    // Фосагро
+      'FS', 'FEES',    // ФСК
+      'HY', 'HYDR',    // РусГидро
+      'IR', 'IRAO',    // Интер РАО
+      'RT', 'RTKM', 'RTKMP',   // Ростелеком
+      'PL', 'POLY',    // Полиметалл
+      'LE', 'LEAS',    // Европлан
+      'FL', 'FLOT',    // Совкомфлот
+      'SVCB',    // Совкомбанк (без SV - конфликт с SILV)
+      'OZ', 'OZON',    // Озон
+      'PO', 'POSI',    // Positive
+      'HH', 'HHRU',    // HeadHunter
+      'ML', 'MAIL', 'VKCO',    // VK
+      'FV', 'FIVE', 'X5',      // X5
+      // Дополнительные из списка задачи
+      'IVAT',    // Ивантеевка
+      'SGZH',    // Сегежа
+      'WUSH',    // Whoosh
+      'KMAZ',    // КАМАЗ
+      'MDMG',    // MD Medical
+      'CBOM',    // МКБ
+      'BSPB',    // Банк СПб
+      'ASTR',    // Астра
+      'SMLT',    // Самолёт
+      'SOFL',    // Софтлайн
+      'ENPG',    // Эн+
+      'MVID',    // М.Видео
+      'NOTKM',   // Новатэк (другой тикер)
+      'BELUGA', // Белуга
+      'HEAD',    // HeadHunter (другой тикер)
+      'FESH',    // ДВМП
+      'ISKJ',    // Искра
+      'UPRO',    // Юнипро
+      'SPBE',    // СПБ Биржа
+      'SFIN',    // SFI
+      'MTLR',    // Мечел
+      'RASP',    // Распадская
+      'RENI',    // Ренессанс
+      'T-',      // Т-Банк (фьючерсы T-3.26, T-6.26)
+      'PX',      // ПИК (короткий код)
+      'GK',      // ГМК Норникель (короткий код)
+    ];
+
+    // Категоризация по тикеру/названию
+    const CATEGORY_RULES = {
+      metals: {
+        tickers: ['GOLD', 'GOLDM', 'SILV', 'PLAT', 'PALL', 'GD', 'PT', 'PD', 'ALUM', 'NICKEL', 'ZINC', 'COPPER'],
+        keywords: ['золот', 'серебр', 'платин', 'паллад', 'gold', 'silver', 'platinum', 'palladium', 'алюмин', 'никель', 'цинк', 'медь']
+      },
+      crypto: {
+        tickers: ['BTC', 'ETH', 'BTCUSDT', 'ETHUSDT'],
+        keywords: ['биткоин', 'эфир', 'крипт', 'bitcoin', 'ethereum', 'crypto']
+      },
+      indices: {
+        tickers: ['MIX', 'IMOEX', 'IMOEXF', 'RTS', 'RTSI', 'IPO', 'OGI', 'FNI', 'NASD', 'NIKK', 'STOX', 'SPYF', 'R2000', 'DAX', 'DJ30', 'HANG'],
+        keywords: ['индекс', 'index']
+      },
+      currencies: {
+        tickers: ['Si', 'Eu', 'CNY', 'UCNY', 'GBP', 'GBPU', 'JPY', 'UJPY', 'CHF', 'USDRUB', 'EURRUB', 'CNYRUB', 'TRY', 'AED', 'INR', 'AUDU', 'AMD', 'HKD', 'KZT'],
+        keywords: ['курс доллар', 'курс евро', 'курс юан', 'currency']
+      },
+      commodities: {
+        tickers: ['BR', 'BRM', 'NG', 'NGM', 'CL', 'WHEAT', 'CORN', 'SOYB', 'SUGAR', 'COFFEE', 'Co', 'WH', 'ORANGE', 'COCOA'],
+        keywords: ['нефть brent', 'природный газ', 'пшениц', 'кукуруз', 'соя', 'сахар', 'кофе', 'wheat', 'natural gas', 'апельсин', 'какао']
+      },
+      other: {
+        tickers: ['TENCENT', 'ARGT'],
+        keywords: []
+      },
+      stocks: {
+        tickers: STOCK_TICKERS,
+        keywords: []
+      }
+    };
+
+    // Явные переопределения категорий для конфликтующих тикеров
+    // Формат: начало тикера -> категория
+    const TICKER_OVERRIDES = {
+      // Акции (фьюч) - короткие коды
+      'PX': 'stocks',   // ПИК
+      'GK': 'stocks',   // ГМК Норникель
+      'PS': 'stocks',
+      'MD': 'stocks',
+      'IS': 'stocks',
+      'CM': 'stocks',
+      'AK': 'stocks',
+      'IV': 'stocks',
+      'EA': 'stocks',
+      'SS': 'stocks',
+      'NV': 'stocks',
+      'RU': 'stocks',
+      'S0': 'stocks',
+      'PI': 'stocks',
+      'MC': 'stocks',
+      'UN': 'stocks',
+      'NM': 'stocks',
+      'WU': 'stocks',
+      'KM': 'stocks',
+      'RD': 'stocks',
+      'VK': 'stocks',
+      'HD': 'stocks',
+      'TB': 'stocks',
+      'TP': 'stocks',
+      'FE': 'stocks',
+      'MV': 'stocks',
+      'YD': 'stocks',
+      'RA': 'stocks',
+      'SE': 'stocks',
+      'NB': 'stocks',
+      'ON': 'stocks',
+      'SC': 'stocks',
+      'SO': 'stocks',
+      'AS': 'stocks',
+      'SZ': 'stocks',
+      'SH': 'stocks',
+      'BS': 'stocks',
+      'RQ': 'stocks',
+      // Индексы
+      'AG': 'indices',  // Индекс
+      'OG': 'indices',  // Индекс
+      'TC': 'indices',  // Индекс (не путать с TCSG-Тинькофф)
+      'IP': 'indices',  // IPO индекс
+      'FN': 'indices',  // Финансовый индекс
+      'BZ': 'indices',  // Индекс
+      'SD': 'indices',  // Индекс
+      'BD': 'indices',  // Индекс
+      'SF': 'indices',  // Индекс
+      'DX': 'indices',  // Индекс
+      'R2': 'indices',  // R2000 индекс
+      'AA': 'indices',  // Индекс
+      'HS': 'indices',  // Hang Seng индекс
+      'N2': 'indices',  // Nikkei индекс
+      'VI': 'indices',  // VIX индекс
+      'EM': 'indices',  // Emerging Markets индекс
+      'NA': 'indices',  // NASDAQ индекс
+      'CI': 'indices',  // Индекс
+      'BB': 'indices',  // Индекс
+      'XI': 'indices',  // Индекс
+      'SX': 'indices',  // STOXX индекс
+      'DJ': 'indices',  // Dow Jones индекс
+      // Металлы
+      'GN': 'metals',   // Никель
+      'ZC': 'metals',   // Цинк
+      'AN': 'metals',   // Алюминий
+      'NC': 'metals',   // Никель
+      // Валюты
+      'JP': 'currencies', // Йена
+      'UC': 'currencies', // Юань
+      'BY': 'currencies',
+      'GU': 'currencies',
+      'TY': 'currencies',
+      'AU': 'currencies',
+      'AE': 'currencies',
+      'HK': 'currencies',
+      'AR': 'currencies',
+      'KZ': 'currencies',
+      'I2': 'currencies',
+      // Товары
+      'BM': 'commodities', // Brent
+      'NR': 'commodities', // Природный газ
+      'CC': 'commodities', // Какао
+      // Крипта
+      'EH': 'crypto',   // Эфириум
+    };
+
+    function detectCategory(ticker, name, instrumentType) {
+      // Если это акция (спот) - сразу в категорию "shares"
+      if (instrumentType === 'shares') {
+        return 'shares';
+      }
+      
+      const tickerUpper = (ticker || '').toUpperCase();
+      const nameLower = (name || '').toLowerCase();
+      
+      // Сначала проверяем явные переопределения (приоритет над всем)
+      for (const [prefix, category] of Object.entries(TICKER_OVERRIDES)) {
+        if (tickerUpper.startsWith(prefix.toUpperCase())) {
+          return category;
+        }
+      }
+      
+      // Собираем все правила со всех категорий и сортируем по длине тикера (длинные первыми)
+      const allRules = [];
+      for (const [category, rules] of Object.entries(CATEGORY_RULES)) {
+        for (const t of rules.tickers || []) {
+          allRules.push({ ticker: t.toUpperCase(), category });
+        }
+      }
+      // Сортируем по длине тикера (длинные первыми)
+      allRules.sort((a, b) => b.ticker.length - a.ticker.length);
+      
+      // Проверяем тикеры (длинные совпадения имеют приоритет)
+      for (const rule of allRules) {
+        if (tickerUpper.includes(rule.ticker)) {
+          return rule.category;
+        }
+      }
+      
+      // Проверяем ключевые слова
+      const categoryOrder = ['metals', 'crypto', 'indices', 'currencies', 'commodities', 'other', 'stocks'];
+      for (const category of categoryOrder) {
+        const rules = CATEGORY_RULES[category];
+        if (!rules) continue;
+        for (const kw of rules.keywords || []) {
+          if (nameLower.includes(kw.toLowerCase())) {
+            return category;
+          }
+        }
+      }
+      
+      return 'other';
+    }
+
+    function getCategoryCounts() {
+      const counts = { all: allFutures.length, metals: 0, crypto: 0, indices: 0, currencies: 0, commodities: 0, stocks: 0, shares: 0, other: 0 };
+      allFutures.forEach(f => {
+        const cat = detectCategory(f.ticker, f.name, f.instrument_type);
+        if (counts[cat] !== undefined) counts[cat]++;
+        else counts.other++;
+      });
+      return counts;
+    }
+
+    function updateCategoryButtons() {
+      const counts = getCategoryCounts();
+      document.querySelectorAll('.category-btn').forEach(btn => {
+        const cat = btn.dataset.category;
+        const count = counts[cat] || 0;
+        const existingCount = btn.querySelector('.category-count');
+        if (existingCount) existingCount.remove();
+        if (count > 0 || cat === 'all') {
+          const span = document.createElement('span');
+          span.className = 'category-count';
+          span.textContent = '(' + count + ')';
+          btn.appendChild(span);
+        }
+      });
+    }
+
+    function showMsg(text, type = 'info') {
+      const el = document.getElementById('message');
+      el.textContent = text;
+      el.className = 'msg ' + (type === 'error' ? 'error' : 'info');
+      el.style.display = text ? 'block' : 'none';
+    }
+
+    function setLoading(loading) {
+      document.body.classList.toggle('loading', loading);
+    }
+
+    // ===== API ключи =====
+    const STORAGE_API_KEYS = 'widget_api_keys_' + CURRENT_PROFILE;
+
+    function getApiKeys() {
+      try { return JSON.parse(localStorage.getItem(STORAGE_API_KEYS) || '[]'); } catch { return []; }
+    }
+    function saveApiKeys(keys) {
+      localStorage.setItem(STORAGE_API_KEYS, JSON.stringify(keys));
+    }
+    function renderApiKeys() {
+      const list = document.getElementById('apiKeysList');
+      if (!list) return;
+      const keys = getApiKeys();
+      list.innerHTML = '';
+      if (keys.length === 0) {
+        list.innerHTML = '<div style="color:var(--muted);font-size:0.85rem;">Ключи не добавлены — используется серверный токен</div>';
+        return;
+      }
+      keys.forEach((k, i) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;gap:0.5rem;align-items:center;margin-bottom:0.4rem;';
+        const masked = k.length > 8 ? k.slice(0, 4) + '••••••••' + k.slice(-4) : '••••••••';
+        row.innerHTML = `
+          <span style="font-family:monospace;font-size:0.85rem;flex:1;color:var(--text);">${masked}</span>
+          <button type="button" onclick="deleteApiKey(${i})" style="padding:0.2rem 0.6rem;font-size:0.8rem;background:var(--negative);border-color:var(--negative);color:#fff;">✕</button>
+        `;
+        list.appendChild(row);
+      });
+    }
+    function addApiKey() {
+      const inp = document.getElementById('apiKeyInput');
+      const val = inp.value.trim();
+      if (!val) return;
+      const keys = getApiKeys();
+      if (keys.includes(val)) { inp.value = ''; return; }
+      keys.push(val);
+      saveApiKeys(keys);
+      inp.value = '';
+      renderApiKeys();
+    }
+    function deleteApiKey(i) {
+      const keys = getApiKeys();
+      keys.splice(i, 1);
+      saveApiKeys(keys);
+      renderApiKeys();
+    }
+
+    function fetchWithTimeout(url, ms) {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), ms);
+      const keys = getApiKeys();
+      const headers = keys.length > 0 ? { 'X-API-Tokens': keys.join(',') } : {};
+      return fetch(url, { signal: ctrl.signal, headers }).finally(() => clearTimeout(t));
+    }
+
+    // ===== Polling браузерных уведомлений =====
+    function startNotifyPolling() {
+      // Запрашиваем разрешение сразу при загрузке
+      if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission();
+      }
+      setInterval(async () => {
+        try {
+          const r = await fetch('/api/notify/poll');
+          if (!r.ok) return;
+          const data = await r.json();
+          for (const n of (data.notifications || [])) {
+            showBrowserNotification(n.msg);
+          }
+        } catch (_) {}
+      }, 3000);
+    }
+
+    function showBrowserNotification(msg) {
+      if (!('Notification' in window)) return;
+      if (Notification.permission === 'granted') {
+        const n = new Notification('Виджет', { body: msg, silent: false });
+        setTimeout(() => n.close(), 5000);
+      }
+    }
+
+    // ===== Мониторинг расхождений акция/фьючерс =====
+
+    // Маппинг: тикер акции → массив возможных префиксов фьючерса
+    // Тикеры могут быть вида SBRF-6.26 — ищем по startsWith(префикс)
+    const SPOT_FUTURES_MAP = {
+      "SBER": ["SBRF", "SBERF"],
+      "GAZP": ["GAZRF", "GAZR"],
+      "LKOH": ["LKOH"],
+      "NVTK": ["NK", "NVTK"],
+      "GMKN": ["GM", "GMKN"],
+      "VTBR": ["VB", "VTBR"],
+      "PLZL": ["PZ", "PLZL"],
+      "ROSN": ["RN", "ROSN"],
+      "TATN": ["TT", "TATN"],
+      "YNDX": ["YN", "YNDX", "YDEX"],
+      "MGNT": ["MN", "MGNT"],
+      "AFLT": ["AF", "AFLT"],
+      "ALRS": ["AL", "ALRS"],
+      "MTSS": ["MT", "MTSS"],
+      "NLMK": ["NM", "NLMK"],
+      "MAGN": ["MG", "MAGN"],
+      "CHMF": ["CH", "CHMF"],
+      "POLY": ["PL", "POLY"],
+      "PHOR": ["PH", "PHOR"],
+      "IRAO": ["IR", "IRAO"],
+    };
+
+    let _notifiedPairs = {};   // {key: timestamp} — чтобы не спамить одним и тем же
+    let _divTimer = null;
+
+    function getDivThreshold() {
+      const el = document.getElementById('divThreshold');
+      return el ? (parseFloat(el.value) || 0.3) : 0.3;
+    }
+
+    // Найти фьючерс в currentRows по префиксу тикера
+    function findFuturesByPrefix(prefixes) {
+      if (!currentRows || !prefixes) return null;
+      for (const row of currentRows) {
+        const ticker = (row.ticker || row.instrument_id || '').toUpperCase();
+        for (const p of prefixes) {
+          if (ticker.startsWith(p.toUpperCase())) return row;
+        }
+      }
+      return null;
+    }
+
+    async function checkDivergence() {
+      try {
+        const r = await fetchWithTimeout('/api/spot_prices', 10000);
+        if (!r.ok) return;
+        const data = await r.json();
+        const stocks = data.stocks || [];
+
+        const threshold = getDivThreshold();
+        const alerts = [];
+        const rows = [];
+
+        for (const stock of stocks) {
+          if (stock.change_pct == null) continue;
+          const prefixes = SPOT_FUTURES_MAP[stock.ticker.toUpperCase()];
+          if (!prefixes) continue;
+          const futRow = findFuturesByPrefix(prefixes);
+          if (!futRow) continue;
+
+          const futPct = futRow.deviation_pct ?? futRow.change_pct ?? null;
+          if (futPct == null) continue;
+
+          const diff = Math.abs(stock.change_pct - futPct);
+          const isAlert = diff >= threshold;
+
+          rows.push({ stock, futRow, futPct, diff, isAlert });
+          if (isAlert) alerts.push({ stock, futRow, futPct, diff });
+        }
+
+        renderDivergenceTable(rows);
+
+        // Уведомления — не чаще раза в 2 минуты для каждой пары
+        const now = Date.now();
+        for (const a of alerts) {
+          const key = `${a.stock.ticker}_${(a.futRow.ticker || a.futRow.instrument_id || '').slice(0, 6)}`;
+          if (_notifiedPairs[key] && now - _notifiedPairs[key] < 120000) continue;
+          _notifiedPairs[key] = now;
+          sendDivNotification(a);
+        }
+
+      } catch (e) {
+        console.warn('divergence check failed', e);
+      }
+    }
+
+    function renderDivergenceTable(rows) {
+      const panel = document.getElementById('divergencePanel');
+      const tbody = document.getElementById('divergenceBody');
+      const badge = document.getElementById('divergenceAlertCount');
+      if (!panel || !tbody) return;
+
+      if (rows.length === 0) {
+        panel.style.display = 'none';
+        return;
+      }
+      panel.style.display = 'block';
+
+      const alertCount = rows.filter(r => r.isAlert).length;
+      if (alertCount > 0) {
+        badge.textContent = alertCount;
+        badge.style.display = 'inline';
+      } else {
+        badge.style.display = 'none';
+      }
+
+      tbody.innerHTML = rows.map(({ stock, futRow, futPct, diff, isAlert }) => {
+        const sSign = stock.change_pct >= 0 ? '+' : '';
+        const fSign = futPct >= 0 ? '+' : '';
+        const dSign = diff >= 0 ? '+' : '';
+        const sCls = stock.change_pct > 0 ? 'pct-positive' : stock.change_pct < 0 ? 'pct-negative' : 'pct-null';
+        const fCls = futPct > 0 ? 'pct-positive' : futPct < 0 ? 'pct-negative' : 'pct-null';
+        const dCls = isAlert ? 'pct-negative' : 'pct-null';
+        const futName = futRow.name || futRow.ticker || futRow.instrument_id || '—';
+        return `<tr class="${isAlert ? 'alert' : ''}">
+          <td>${stock.ticker}</td>
+          <td class="${sCls} num">${sSign}${stock.change_pct}%</td>
+          <td>${futName}</td>
+          <td class="${fCls} num">${fSign}${futPct}%</td>
+          <td class="${dCls} num">${dSign}${diff.toFixed(2)}%</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function sendDivNotification(a) {
+      const title = `⚡ Расхождение: ${a.stock.ticker}`;
+      const sSign = a.stock.change_pct >= 0 ? '+' : '';
+      const fSign = a.futPct >= 0 ? '+' : '';
+      const body = `Акция ${sSign}${a.stock.change_pct}% · Фьюч ${fSign}${a.futPct}% · Разница ${a.diff.toFixed(2)}%`;
+
+      if ('Notification' in window) {
+        if (Notification.permission === 'granted') {
+          new Notification(title, { body, icon: '' });
+        } else if (Notification.permission === 'default') {
+          Notification.requestPermission().then(p => {
+            if (p === 'granted') new Notification(title, { body });
+          });
+        }
+      }
+
+      // Дополнительно — мигаем строкой в таблице и пишем в message
+      const msg = document.getElementById('message');
+      if (msg) {
+        msg.className = 'msg error';
+        msg.textContent = `⚡ ${title}: ${body}`;
+        setTimeout(() => { if (msg.textContent.startsWith('⚡')) msg.textContent = ''; }, 8000);
+      }
+    }
+
+    function startDivergenceMonitor(auctionInfo) {
+      // Запускаем только во время аукциона фьючерсов
+      const isFutAuction = auctionInfo && auctionInfo.futures_auction;
+      if (isFutAuction) {
+        if (!_divTimer) {
+          checkDivergence();
+          _divTimer = setInterval(checkDivergence, 5000);
+        }
+      } else {
+        if (_divTimer) { clearInterval(_divTimer); _divTimer = null; }
+        // Скрываем панель вне аукциона
+        const panel = document.getElementById('divergencePanel');
+        if (panel) panel.style.display = 'none';
+      }
+    }
+
+    function updateLastUpdate() {
+      const el = document.getElementById('lastUpdate');
+      const now = new Date();
+      el.textContent = 'Обновлено: ' + now.toLocaleTimeString('ru-RU');
+    }
+
+    function formatPrice(value, instrType) {
+      if (value == null) return '—';
+      // Для фьючерсов показываем без усечения (trailing zeros сохраняем)
+      if (instrType === 'futures') {
+        if (Math.abs(value) >= 1) return value.toFixed(2);
+        return value.toFixed(4);
+      }
+      // Остальные инструменты — обрезаем незначащие нули
+      if (Math.abs(value) >= 1) {
+        return value.toFixed(2).replace(/\.?0+$/, '') || value.toFixed(2);
+      }
+      return value.toFixed(4).replace(/\.?0+$/, '') || value.toFixed(4);
+    }
+
+    async function loadFutures() {
+      const r = await fetchWithTimeout('/api/futures?session_id=' + encodeURIComponent(SESSION_ID), 15000);
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        showMsg(err.error || 'Ошибка загрузки списка инструментов', 'error');
+        return [];
+      }
+      const data = await r.json();
+      allFutures = data.futures || [];
+      allFutures.forEach(f => {
+        namesMap[f.figi] = f.name || f.ticker;
+        namesMap[f.instrument_uid] = f.name || f.ticker;
+      });
+      // Строим tickerMap: instrument_uid → ticker (для divergence monitor)
+      window._tickerMap = {};
+      allFutures.forEach(f => {
+        if (f.instrument_uid) window._tickerMap[f.instrument_uid] = f.ticker;
+        if (f.figi) window._tickerMap[f.figi] = f.ticker;
+      });
+      try { localStorage.setItem(STORAGE_NAMES, JSON.stringify(namesMap)); } catch (_) {}
+      return allFutures;
+    }
+
+    function updateLimitWarning() {
+      const checkedCount = document.querySelectorAll('#settingsList input[type=checkbox]:checked').length;
+      const limitInfo = document.getElementById('limitInfo');
+      const limitWarning = document.getElementById('limitWarning');
+      
+      if (limitInfo) {
+        limitInfo.textContent = checkedCount + '/' + MAX_INSTRUMENTS_LIMIT;
+        limitInfo.style.color = checkedCount > MAX_INSTRUMENTS_LIMIT ? 'var(--negative)' : 'var(--accent)';
+      }
+      
+      if (limitWarning) {
+        if (checkedCount > MAX_INSTRUMENTS_LIMIT) {
+          limitWarning.textContent = '⚠️ Выбрано ' + checkedCount + ' инструментов. Лимит: ' + MAX_INSTRUMENTS_LIMIT + '. Лишние не будут обновляться в реальном времени (ограничение API).';
+          limitWarning.style.display = 'block';
+        } else {
+          limitWarning.style.display = 'none';
+        }
+      }
+    }
+
+    function renderSettings(filter = '') {
+      const list = document.getElementById('settingsList');
+      list.innerHTML = '';
+      const filterLower = filter.toLowerCase().trim();
+      
+      allFutures.forEach(f => {
+        const id = f.instrument_uid || f.figi;
+        const displayName = (f.name || f.ticker) + ' (' + f.ticker + ')';
+        const category = detectCategory(f.ticker, f.name, f.instrument_type);
+        
+        const matchesSearch = !filterLower || 
+          displayName.toLowerCase().includes(filterLower) ||
+          f.ticker.toLowerCase().includes(filterLower);
+        const matchesCategory = activeCategory === 'all' || category === activeCategory;
+        
+        const label = document.createElement('label');
+        if (!matchesSearch || !matchesCategory) label.classList.add('hidden');
+        label.dataset.searchable = displayName.toLowerCase();
+        label.dataset.category = category;
+        
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.value = id;
+        cb.checked = selectedIds.has(id);
+        cb.dataset.figi = f.figi;
+        cb.addEventListener('change', updateLimitWarning);
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(displayName));
+        list.appendChild(label);
+      });
+      
+      updateCategoryButtons();
+      updateLimitWarning();
+    }
+
+    function filterSettings() {
+      const filter = document.getElementById('searchInput').value.toLowerCase().trim();
+      document.querySelectorAll('#settingsList label').forEach(label => {
+        const matchesSearch = !filter || label.dataset.searchable.includes(filter);
+        const matchesCategory = activeCategory === 'all' || label.dataset.category === activeCategory;
+        label.classList.toggle('hidden', !matchesSearch || !matchesCategory);
+      });
+    }
+
+    function setActiveCategory(category) {
+      activeCategory = category;
+      document.querySelectorAll('.category-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.category === category);
+      });
+      filterSettings();
+    }
+
+    function sortRows(rows) {
+      return [...rows].sort((a, b) => {
+        let valA, valB;
+        switch (sortColumn) {
+          case 'name':
+            valA = (a.name || '').toLowerCase();
+            valB = (b.name || '').toLowerCase();
+            break;
+          case 'close':
+            valA = a.candle_5min_close ?? a.close ?? -Infinity;
+            valB = b.candle_5min_close ?? b.close ?? -Infinity;
+            break;
+          case 'daily_close':
+            valA = a.daily_close_price ?? a.close_price ?? -Infinity;
+            valB = b.daily_close_price ?? b.close_price ?? -Infinity;
+            break;
+          case 'open':
+            valA = a.open ?? a.auction_price ?? -Infinity;
+            valB = b.open ?? b.auction_price ?? -Infinity;
+            break;
+          case 'change':
+          case 'deviation':
+            valA = a.change_pct ?? a.deviation_pct ?? -Infinity;
+            valB = b.change_pct ?? b.deviation_pct ?? -Infinity;
+            break;
+          case 'imbalance':
+            valA = a.imbalance ?? -Infinity;
+            valB = b.imbalance ?? -Infinity;
+            break;
+          case 'auction':
+            valA = a.auction_price ?? -Infinity;
+            valB = b.auction_price ?? -Infinity;
+            break;
+          case 'lots':
+            valA = a.executed_lots ?? a.total_lots ?? -Infinity;
+            valB = b.executed_lots ?? b.total_lots ?? -Infinity;
+            break;
+          default:
+            return 0;
+        }
+        if (valA < valB) return sortDirection === 'asc' ? -1 : 1;
+        if (valA > valB) return sortDirection === 'asc' ? 1 : -1;
+        return 0;
+      });
+    }
+
+    function updateSortIcons() {
+      document.querySelectorAll('th[data-sort]').forEach(th => {
+        const icon = th.querySelector('.sort-icon');
+        if (th.dataset.sort === sortColumn) {
+          icon.textContent = sortDirection === 'asc' ? '▲' : '▼';
+        } else {
+          icon.textContent = '';
+        }
+      });
+    }
+
+    function renderTable(rows) {
+      const tbody = document.getElementById('tableBody');
+      if (!rows || rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7">Выберите инструменты в настройках или данных пока нет.</td></tr>';
+        return;
+      }
+      const sorted = sortRows(rows);
+      tbody.innerHTML = sorted.map(row => {
+        const name = row.name || row.instrument_id;
+        const instrObj = allFutures.find(f => f.instrument_uid === row.instrument_id || f.figi === row.instrument_id);
+        const instrType = instrObj ? instrObj.instrument_type : '';
+
+        // Цена закрытия последней 5-минутной свечи
+        const closePrice = row.candle_5min_close != null ? formatPrice(row.candle_5min_close, instrType) :
+                          (row.close_price != null ? formatPrice(row.close_price, instrType) : '—');
+
+        // Дневное закрытие (daily_close_price из API, fallback на close_price)
+        const dailyClose = row.daily_close_price != null ? formatPrice(row.daily_close_price, instrType) :
+                          (row.close_price != null ? formatPrice(row.close_price, instrType) : '—');
+
+        // Цена аукциона
+        const auctionPrice = row.auction_price != null ? formatPrice(row.auction_price, instrType) : '—';
+        
+        // Отклонение
+        let devPct = '—';
+        let devClass = 'pct-null';
+        const deviation = row.deviation_pct ?? row.change_pct;
+        if (deviation != null) {
+          devPct = deviation > 0 ? '+' + deviation : String(deviation);
+          devClass = deviation > 0 ? 'pct-positive' : deviation < 0 ? 'pct-negative' : 'pct-null';
+        }
+        
+        // Лоты - количество лотов, которые ИСПОЛНЯТСЯ
+        const executedLots = row.executed_lots != null ? row.executed_lots : (row.total_lots != null ? row.total_lots : '—');
+        
+        // Дисбаланс - количество лотов, которые НЕ исполнятся
+        let imbalance = '—';
+        let imbalanceClass = 'pct-null';
+        if (row.imbalance != null && row.imbalance !== 0) {
+          imbalance = String(row.imbalance);
+          if (row.imbalance_direction === 'bid') {
+            imbalanceClass = 'pct-positive';  // Покупатели преобладают — зелёный
+          } else if (row.imbalance_direction === 'ask') {
+            imbalanceClass = 'pct-negative';  // Продавцы преобладают — красный
+          }
+        } else if (row.imbalance === 0) {
+          imbalance = '0';
+        }
+        
+        return (
+          '<tr>' +
+          '<td>' + escapeHtml(name) + '</td>' +
+          '<td class="num">' + closePrice + '</td>' +
+          '<td class="num">' + dailyClose + '</td>' +
+          '<td class="num">' + auctionPrice + '</td>' +
+          '<td class="num ' + devClass + '">' + devPct + (deviation != null ? '%' : '') + '</td>' +
+          '<td class="num">' + executedLots + '</td>' +
+          '<td class="num ' + imbalanceClass + '">' + imbalance + '</td>' +
+          '</tr>'
+        );
+      }).join('');
+      updateSortIcons();
+    }
+
+    function escapeHtml(s) {
+      const div = document.createElement('div');
+      div.textContent = s;
+      return div.innerHTML;
+    }
+
+    const MAX_INSTRUMENTS_PER_REQUEST = MAX_INSTRUMENTS_LIMIT; // Лимит серверного кэширования
+
+    async function loadOrderbook(skipLoading) {
+      const ids = Array.from(selectedIds).filter(Boolean).slice(0, MAX_INSTRUMENTS_PER_REQUEST);
+      if (ids.length === 0) {
+        currentRows = [];
+        renderTable([]);
+        return;
+      }
+      if (!skipLoading) setLoading(true);
+      showMsg('');
+      try {
+        const r = await fetchWithTimeout('/api/orderbook?ids=' + encodeURIComponent(ids.join(',')) + '&session_id=' + encodeURIComponent(SESSION_ID), 45000);
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({}));
+          showMsg(err.error || 'Ошибка загрузки данных', 'error');
+          // Если это не первый запрос и есть предыдущие данные, оставляем их на экране
+          if (!currentRows || currentRows.length === 0) {
+            currentRows = [];
+            renderTable([]);
+          }
+          return;
+        }
+        const data = await r.json();
+        auctionInfo = data.auction || null;
+        currentRows = data.rows || [];
+        currentRows.forEach(row => {
+          row.name = namesMap[row.instrument_id] || row.instrument_id;
+          if (!row.ticker && window._tickerMap) {
+            row.ticker = window._tickerMap[row.instrument_id] || '';
+          }
+        });
+        renderTable(currentRows);
+        updateAuctionBadge();
+        updateLastUpdate();
+        startDivergenceMonitor(auctionInfo);
+        
+        // Показываем предупреждение о лимите
+        if (data.limit_warning) {
+          showMsg(data.limit_warning, 'error');
+        } else if (selectedIds.size > MAX_INSTRUMENTS_PER_REQUEST) {
+          showMsg('Лимит: ' + MAX_INSTRUMENTS_PER_REQUEST + ' инструментов. Выбрано: ' + selectedIds.size + '. Лишние не будут обновляться в реальном времени.', 'error');
+        }
+      } catch (e) {
+        showMsg(
+          e.name === 'AbortError'
+            ? 'Таймаут загрузки. Выберите меньше инструментов в настройках.'
+            : ('Ошибка: ' + (e.message || e)),
+          'error'
+        );
+        // При ошибке сохраняем предыдущие данные, чтобы таблица не пропадала
+        if (!currentRows || currentRows.length === 0) {
+          currentRows = [];
+          renderTable([]);
+        } else {
+          renderTable(currentRows);
+        }
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    function updateAuctionBadge() {
+      const badge = document.getElementById('auctionBadge');
+      const indicator = document.getElementById('modeIndicator');
+      if (auctionInfo && auctionInfo.is_any_auction) {
+        // Показываем активные аукционы
+        let badges = [];
+        if (auctionInfo.shares_auction) {
+          badges.push('<span class="auction-badge">' + auctionInfo.shares_auction + '</span>');
+        }
+        if (auctionInfo.futures_auction) {
+          badges.push('<span class="auction-badge">' + auctionInfo.futures_auction + '</span>');
+        }
+        badge.innerHTML = badges.join(' ');
+        indicator.textContent = 'МСК: ' + auctionInfo.moscow_time;
+        indicator.classList.add('auction');
+      } else {
+        badge.innerHTML = '';
+        if (auctionInfo) {
+          indicator.textContent = 'МСК: ' + auctionInfo.moscow_time;
+        }
+        indicator.classList.remove('auction');
+      }
+    }
+
+    function loadData(skipLoading) {
+      loadOrderbook(skipLoading);
+    }
+
+    function toggleSettings() {
+      try {
+        const panel = document.getElementById('settingsPanel');
+        if (!panel) return;
+        const isVisible = panel.style.display !== 'none';
+        // Сначала переключаем видимость панели (синхронно), потом подгружаем список
+        panel.style.display = isVisible ? 'none' : 'block';
+        if (panel.style.display === 'none') return;
+        // Рендерим список API ключей
+        renderApiKeys();
+        // Показываем название профиля в настройках
+        const profileNameEl = document.getElementById('profileNameInSettings');
+        if (profileNameEl) profileNameEl.textContent = CURRENT_PROFILE;
+        const searchEl = document.getElementById('searchInput');
+        if (searchEl) searchEl.value = '';
+        if (allFutures.length === 0) {
+          const list = document.getElementById('settingsList');
+          if (list) list.innerHTML = 'Загрузка списка...';
+          loadFutures().then(() => { renderSettings(); }).catch(() => {
+            if (list) list.innerHTML = 'Ошибка загрузки. Нажмите Обновить.';
+          });
+        } else {
+          renderSettings();
+        }
+      } catch (e) { console.error('toggleSettings', e); }
+    }
+
+    function saveSettings() {
+      selectedIds.clear();
+      document.querySelectorAll('#settingsList input[type=checkbox]:checked').forEach(cb => {
+        selectedIds.add(cb.value);
+      });
+      try {
+        localStorage.setItem(STORAGE_IDS, JSON.stringify(Array.from(selectedIds)));
+      } catch (_) {}
+      document.getElementById('settingsPanel').style.display = 'none';
+      loadData();
+    }
+
+    function selectAll() {
+      document.querySelectorAll('#settingsList label:not(.hidden) input[type=checkbox]').forEach(cb => { cb.checked = true; });
+      updateLimitWarning();
+    }
+    function selectNone() {
+      document.querySelectorAll('#settingsList input[type=checkbox]').forEach(cb => { cb.checked = false; });
+      updateLimitWarning();
+    }
+    function selectFiltered() {
+      document.querySelectorAll('#settingsList label:not(.hidden) input[type=checkbox]').forEach(cb => { cb.checked = true; });
+      updateLimitWarning();
+    }
+
+    function toggleAutoRefresh() {
+      try {
+        autoRefreshEnabled = !autoRefreshEnabled;
+        const btn = document.getElementById('btnAutoRefresh');
+        const status = document.getElementById('autoStatus');
+        if (btn) {
+          btn.textContent = autoRefreshEnabled ? 'Авто: ВКЛ' : 'Авто: ВЫКЛ';
+          if (autoRefreshEnabled) btn.classList.add('active');
+          else btn.classList.remove('active');
+        }
+        if (status) {
+          if (autoRefreshEnabled) {
+            status.classList.add('active');
+            updateAutoStatusText();
+          } else {
+            status.textContent = 'автообновление выключено';
+            status.classList.remove('active');
+          }
+        }
+        if (autoRefreshEnabled) startAutoRefresh();
+        else stopAutoRefresh();
+      } catch (e) { console.error('toggleAutoRefresh', e); }
+    }
+
+    function getRefreshInterval() {
+      // Московское время (UTC+3) — считаем из UTC, не из локального времени браузера
+      const now = new Date();
+      const utcHour = now.getUTCHours();
+      const utcMinute = now.getUTCMinutes();
+      const utcDay = now.getUTCDay(); // 0 = воскресенье, 6 = суббота
+      const mskTotalMin = (utcHour + 3) * 60 + utcMinute;
+      const mskMinOfDay = mskTotalMin % (24 * 60);
+      const timeMinutes = mskMinOfDay;
+      
+      // Корректируем день недели для МСК (если перешли на следующий день)
+      let mskDay = utcDay;
+      if (utcHour + 3 >= 24) {
+        mskDay = (utcDay + 1) % 7;
+      }
+      const isWeekend = (mskDay === 0 || mskDay === 6); // воскресенье или суббота
+      
+      // Расписание аукционов (МСК):
+      // Будни:
+      //   Акции: 6:50-7:00 (открытие), 18:40-18:45 (закрытие), 18:45-18:50 (частичный)
+      //   Фьючерсы: 8:50-9:00 (открытие)
+      // Выходные (суббота, воскресенье):
+      //   9:50-10:00
+      // Добавляем буфер ±2 минуты для подготовки
+      
+      let auctionWindows;
+      if (isWeekend) {
+        auctionWindows = [
+          { start: 9 * 60 + 48, end: 10 * 60 + 2 },   // Выходные: 9:50-10:00
+        ];
+      } else {
+        auctionWindows = [
+          { start: 6 * 60 + 48, end: 7 * 60 + 2 },     // Акции: открытие
+          { start: 8 * 60 + 48, end: 9 * 60 + 2 },     // Фьючерсы: открытие
+          { start: 18 * 60 + 38, end: 18 * 60 + 52 },  // Акции: закрытие + частичный
+        ];
+      }
+      
+      const isAuctionTime = auctionWindows.some(w => timeMinutes >= w.start && timeMinutes <= w.end);
+      
+      return isAuctionTime ? AUTO_REFRESH_INTERVAL_AUCTION : AUTO_REFRESH_INTERVAL_NORMAL;
+    }
+    
+    function updateAutoStatusText() {
+      const status = document.getElementById('autoStatus');
+      const interval = getRefreshInterval();
+      if (interval === AUTO_REFRESH_INTERVAL_AUCTION) {
+        status.textContent = 'обновление каждые 4 сек (аукцион)';
+      } else {
+        status.textContent = 'обновление каждый час';
+      }
+    }
+
+    let lastRefreshInterval = 0;
+    
+    function startAutoRefresh() {
+      stopAutoRefresh();
+      if (autoRefreshEnabled && selectedIds.size > 0) {
+        lastRefreshInterval = getRefreshInterval();
+        const scheduleNext = () => {
+          const interval = getRefreshInterval();
+          updateAutoStatusText();
+          autoRefreshTimer = setTimeout(() => {
+            loadData(true);
+            scheduleNext();
+          }, interval);
+        };
+        loadData(true);
+        scheduleNext();
+        // Каждые 30 сек проверяем: вошли в аукцион — переключаемся на 5 сек
+        if (!window._auctionWatcher) {
+          window._auctionWatcher = setInterval(() => {
+            const iv = getRefreshInterval();
+            if (iv !== lastRefreshInterval) {
+              lastRefreshInterval = iv;
+              if (autoRefreshEnabled && selectedIds.size > 0) {
+                stopAutoRefresh();
+                startAutoRefresh();
+              }
+            }
+          }, 30000);
+        }
+      }
+    }
+
+    function stopAutoRefresh() {
+      if (autoRefreshTimer) {
+        clearTimeout(autoRefreshTimer);
+        autoRefreshTimer = null;
+      }
+    }
+
+    function handleSort(col) {
+      if (sortColumn === col) {
+        sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+      } else {
+        sortColumn = col;
+        sortDirection = col === 'name' ? 'asc' : 'desc';
+      }
+      renderTable(currentRows);
+    }
+
+    // Event listeners (Настройки, Режим, Авто — только через onclick, чтобы не было двойного вызова)
+    document.getElementById('btnRefresh').addEventListener('click', loadData);
+    document.getElementById('btnSaveSettings').addEventListener('click', () => {
+      saveSettings();
+      startAutoRefresh();
+    });
+    document.getElementById('btnSelectAll').addEventListener('click', selectAll);
+    document.getElementById('btnSelectNone').addEventListener('click', selectNone);
+    document.getElementById('btnSelectFiltered').addEventListener('click', selectFiltered);
+    document.getElementById('searchInput').addEventListener('input', filterSettings);
+    
+    // Category filter listeners
+    document.querySelectorAll('.category-btn').forEach(btn => {
+      btn.addEventListener('click', () => setActiveCategory(btn.dataset.category));
+    });
+
+    // Sort listeners
+    document.querySelectorAll('th[data-sort]').forEach(th => {
+      th.addEventListener('click', () => handleSort(th.dataset.sort));
+    });
+
+    // Init: как раньше — ждём загрузку списка и данных, потом снимаем блокировку (к 7:00 при открытом рынке всё успеет)
+    (async function init() {
+      startNotifyPolling();
+      setLoading(true);
+      try {
+        await loadFutures();
+        updateAutoStatusText();
+        if (document.getElementById('settingsPanel').style.display !== 'none') {
+          renderSettings();
+        }
+        if (selectedIds.size > 0) {
+          await loadData();
+          startAutoRefresh();
+        } else {
+          renderTable([]);
+          showMsg('Откройте «Настройки» и выберите инструменты для отображения.', 'info');
+        }
+      } catch (e) {
+        showMsg(e.name === 'AbortError' ? 'Таймаут загрузки. Рынок может быть закрыт — попробуйте после 7:00.' : ('Ошибка: ' + (e.message || e)), 'error');
+        renderTable([]);
+      } finally {
+        setLoading(false);
+      }
+    })();
+  </script>
+</body>
+</html>

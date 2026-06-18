@@ -1,0 +1,17 @@
+[Unit]
+Description=Futures Auction Widget - T-Invest API
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/futures_auction
+Environment="PATH=/opt/futures_auction/.venv/bin:/usr/bin:/usr/local/bin"
+ExecStart=/opt/futures_auction/.venv/bin/python /opt/futures_auction/server.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

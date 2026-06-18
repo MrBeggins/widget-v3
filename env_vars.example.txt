@@ -1,0 +1,6 @@
+# Токен T-Invest API (получить в личном кабинете Т-Инвестиции)
+# https://developer.tbank.ru/invest/intro/intro/
+TINKOFF_INVEST_TOKEN=your_token_here
+
+# Песочница: 1 = sandbox, 0 или пусто = боевой контур
+SANDBOX=1
