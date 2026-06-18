@@ -217,10 +217,10 @@
     <button type="button" id="btnAutoRefresh">Авто: ВКЛ</button>
     <button type="button" id="btnNewProfile">+ Профиль</button>
     <span class="auto-status active" id="autoStatus">обновление каждый час</span>
+    <span id="mskClock" style="font-variant-numeric:tabular-nums;font-size:1.08rem;color:var(--text);margin-left:0.4rem;white-space:nowrap;"></span>
     <span class="mode-indicator" id="modeIndicator"></span>
     <span id="auctionBadge"></span>
     <span class="last-update" id="lastUpdate"></span>
-    <span id="mskClock" style="font-variant-numeric:tabular-nums;font-size:1.08rem;color:var(--text);margin-left:0.5rem;white-space:nowrap;"></span>
   </div>
 
   <div id="message"></div>
@@ -581,8 +581,8 @@
     (function startMskClock() {
       const el = document.getElementById('mskClock');
       function tick() {
-        const now = new Date();
-        const msk = new Date(now.getTime() + (3 * 60 - now.getTimezoneOffset()) * 60000);
+        // UTC+3 = Moscow, без поправки на локальный timezone браузера
+        const msk = new Date(Date.now() + 3 * 3600 * 1000);
         const pad = n => String(n).padStart(2, '0');
         el.textContent = `МСК: ${pad(msk.getUTCHours())}:${pad(msk.getUTCMinutes())}:${pad(msk.getUTCSeconds())}`;
       }
@@ -929,10 +929,10 @@
         if(auctionInfo.shares_auction)  b.push('<span class="auction-badge">'+auctionInfo.shares_auction+'</span>');
         if(auctionInfo.futures_auction) b.push('<span class="auction-badge">'+auctionInfo.futures_auction+'</span>');
         badge.innerHTML=b.join(' ');
-        ind.textContent='МСК: '+auctionInfo.moscow_time; ind.classList.add('auction');
+        ind.textContent='▶ аукцион'; ind.classList.add('auction');
       } else {
         badge.innerHTML='';
-        if(auctionInfo) ind.textContent='МСК: '+auctionInfo.moscow_time;
+        ind.textContent='';
         ind.classList.remove('auction');
       }
     }
