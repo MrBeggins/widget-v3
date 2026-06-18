@@ -217,12 +217,20 @@ app = Flask(__name__, static_folder="static", static_url_path="")
 # ========== Фоновый поток обновления данных ==========
 
 def _background_update_loop():
-    """Фоновый поток: обновляет данные по активным инструментам."""
+    """Фоновый поток: обновляет данные по активным инструментам.
+    Работает только если задан серверный токен TINKOFF_INVEST_TOKEN (опционально).
+    Без серверного токена данные запрашиваются напрямую с токеном пользователя."""
     global _background_running
     logger.info("Background update thread started")
-    
+
     while _background_running:
         try:
+            # Без серверного токена фоновый поток простаивает
+            server_token = os.environ.get("TINKOFF_INVEST_TOKEN", "").strip()
+            if not server_token:
+                time.sleep(30)
+                continue
+
             # Получаем список активных инструментов
             active_ids = _get_active_instruments()
             
@@ -456,7 +464,7 @@ def api_spot_prices():
     """
     token = _get_token_from_request()
     if not token:
-        return jsonify({"error": "TINKOFF_INVEST_TOKEN not set"}), 503
+        return jsonify({"error": "Токен T-Invest не указан. Добавьте токен в настройках виджета."}), 503
 
     base_url = _get_api_url()
     headers = _get_headers(token)
@@ -545,8 +553,8 @@ def api_futures():
     _record_request("/api/futures", session_id)
     token = _get_token_from_request()
     if not token:
-        logger.warning("TINKOFF_INVEST_TOKEN not set")
-        return jsonify({"error": "TINKOFF_INVEST_TOKEN not set"}), 503
+        logger.warning("No token provided in request headers or environment")
+        return jsonify({"error": "Токен T-Invest не указан. Добавьте токен в настройках виджета."}), 503
 
     # Проверяем кэш
     cache_key = "instruments_list"
@@ -803,7 +811,7 @@ def api_table():
     """Данные для таблицы: по списку instrument_id — последняя 5-минутная свеча (close) + цена аукциона + отклонение + лоты."""
     token = _get_token_from_request()
     if not token:
-        return jsonify({"error": "TINKOFF_INVEST_TOKEN not set"}), 503
+        return jsonify({"error": "Токен T-Invest не указан. Добавьте токен в настройках виджета."}), 503
 
     ids_param = request.args.get("ids", "")
     if not ids_param:
@@ -1227,7 +1235,7 @@ def api_orderbook():
     _record_request("/api/orderbook", session_id)
     token = _get_token_from_request()
     if not token:
-        return jsonify({"error": "TINKOFF_INVEST_TOKEN not set"}), 503
+        return jsonify({"error": "Токен T-Invest не указан. Добавьте токен в настройках виджета."}), 503
 
     ids_param = request.args.get("ids", "")
     if not ids_param:

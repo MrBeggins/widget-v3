@@ -272,13 +272,10 @@
     </div>
 
     <hr style="border-color:var(--border);margin:1rem 0;">
-    <h2 style="margin-bottom:0.5rem;">API ключи <small style="color:var(--muted);font-weight:normal;">T-Invest токены для запросов</small></h2>
-    <div id="apiKeysList" style="margin-bottom:0.6rem;"></div>
-    <div style="display:flex;gap:0.5rem;">
-      <input type="password" id="apiKeyInput" placeholder="Вставьте токен T-Invest..." style="flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:0.4rem 0.7rem;font-size:0.85rem;">
-      <button type="button" onclick="addApiKey()">Добавить</button>
-    </div>
-    <div style="margin-top:0.4rem;font-size:0.78rem;color:var(--muted);">Ключи хранятся только в вашем браузере. Если ключей нет — используется серверный токен.</div>
+    <h2 style="margin-bottom:0.4rem;">API ключи <small style="color:var(--muted);font-weight:normal;">T-Invest токены — до 20 штук</small></h2>
+    <div style="margin-bottom:0.65rem;font-size:0.78rem;color:var(--muted);">Токены хранятся только в вашем браузере. Нажмите «Сохранить токены» после изменений.</div>
+    <div id="apiKeysList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:0.3rem;margin-bottom:0.75rem;"></div>
+    <button type="button" onclick="saveApiKeyFields(this)">Сохранить токены</button>
   </div>
   <div class="table-wrap">
     <table id="mainTable">
@@ -658,38 +655,40 @@
       if (!list) return;
       const keys = getApiKeys();
       list.innerHTML = '';
-      if (keys.length === 0) {
-        list.innerHTML = '<div style="color:var(--muted);font-size:0.85rem;">Ключи не добавлены — используется серверный токен</div>';
-        return;
-      }
-      keys.forEach((k, i) => {
+      for (let i = 0; i < 20; i++) {
         const row = document.createElement('div');
-        row.style.cssText = 'display:flex;gap:0.5rem;align-items:center;margin-bottom:0.4rem;';
-        const masked = k.length > 8 ? k.slice(0, 4) + '••••••••' + k.slice(-4) : '••••••••';
-        row.innerHTML = `
-          <span style="font-family:monospace;font-size:0.85rem;flex:1;color:var(--text);">${masked}</span>
-          <button type="button" onclick="deleteApiKey(${i})" style="padding:0.2rem 0.6rem;font-size:0.8rem;background:var(--negative);border-color:var(--negative);color:#fff;">✕</button>
-        `;
+        row.style.cssText = 'display:flex;align-items:center;gap:0.4rem;';
+        const label = document.createElement('span');
+        label.style.cssText = 'font-size:0.78rem;color:var(--muted);min-width:58px;flex-shrink:0;';
+        label.textContent = 'Токен ' + (i + 1);
+        const inp = document.createElement('input');
+        inp.type = 'password';
+        inp.id = 'apiKeyField_' + i;
+        inp.value = keys[i] || '';
+        inp.placeholder = 'Вставьте токен T-Invest...';
+        inp.style.cssText = 'flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:0.3rem 0.55rem;font-size:0.82rem;min-width:0;';
+        row.appendChild(label);
+        row.appendChild(inp);
         list.appendChild(row);
-      });
+      }
     }
-    function addApiKey() {
-      const inp = document.getElementById('apiKeyInput');
-      const val = inp.value.trim();
-      if (!val) return;
-      const keys = getApiKeys();
-      if (keys.includes(val)) { inp.value = ''; return; }
-      keys.push(val);
+    function saveApiKeyFields(btn) {
+      const keys = [];
+      for (let i = 0; i < 20; i++) {
+        const inp = document.getElementById('apiKeyField_' + i);
+        if (inp && inp.value.trim()) keys.push(inp.value.trim());
+      }
       saveApiKeys(keys);
-      inp.value = '';
-      renderApiKeys();
+      if (btn) {
+        const orig = btn.textContent;
+        btn.textContent = 'Сохранено ✓';
+        btn.style.background = 'var(--accent)';
+        btn.style.color = '#000';
+        setTimeout(() => { btn.textContent = orig; btn.style.background = ''; btn.style.color = ''; }, 1500);
+      }
     }
-    function deleteApiKey(i) {
-      const keys = getApiKeys();
-      keys.splice(i, 1);
-      saveApiKeys(keys);
-      renderApiKeys();
-    }
+    function addApiKey() {}
+    function deleteApiKey(i) {}
 
     function fetchWithTimeout(url, ms) {
       const ctrl = new AbortController();
