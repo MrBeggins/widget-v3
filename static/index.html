@@ -580,41 +580,12 @@
     // ===== Часы МСК =====
     (function startMskClock() {
       const el = document.getElementById('mskClock');
-      // Аукцион 08:50–09:00 МСК
-      const AUCTION_START_MIN = 8 * 60 + 50;
-      const AUCTION_END_MIN   = 9 * 60;
-
       function tick() {
         const now = new Date();
-        // МСК = UTC+3
         const msk = new Date(now.getTime() + (3 * 60 - now.getTimezoneOffset()) * 60000);
-        const h = msk.getUTCHours(), m = msk.getUTCMinutes(), s = msk.getUTCSeconds();
         const pad = n => String(n).padStart(2, '0');
-        const timeStr = `${pad(h)}:${pad(m)}:${pad(s)} МСК`;
-
-        const totalMin = h * 60 + m;
-        const totalSec = totalMin * 60 + s;
-
-        let extra = '';
-        if (totalMin >= AUCTION_START_MIN && totalMin < AUCTION_END_MIN) {
-          // Идёт аукцион — осталось до 09:00
-          const left = (AUCTION_END_MIN * 60) - totalSec;
-          const lm = Math.floor(left / 60), ls = left % 60;
-          extra = ` <span style="color:var(--negative);font-weight:700;">⏳ ${pad(lm)}:${pad(ls)} до расчёта</span>`;
-        } else if (totalMin < AUCTION_START_MIN) {
-          // До начала аукциона
-          const left = (AUCTION_START_MIN * 60) - totalSec;
-          const lh = Math.floor(left / 3600), lm = Math.floor((left % 3600) / 60), ls = left % 60;
-          if (left <= 30 * 60) {
-            // Показываем отсчёт только последние 30 мин
-            const fmt = lh > 0 ? `${pad(lh)}:${pad(lm)}:${pad(ls)}` : `${pad(lm)}:${pad(ls)}`;
-            extra = ` <span style="color:var(--accent);">до аукциона ${fmt}</span>`;
-          }
-        }
-
-        el.innerHTML = timeStr + extra;
+        el.textContent = `МСК: ${pad(msk.getUTCHours())}:${pad(msk.getUTCMinutes())}:${pad(msk.getUTCSeconds())}`;
       }
-
       tick();
       setInterval(tick, 1000);
     })();
