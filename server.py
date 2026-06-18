@@ -1314,7 +1314,7 @@ def notify_poll():
 
 
 def main():
-    port = int(os.environ.get("PORT", "5000"))
+    port = int(os.environ.get("PORT", "5003"))
     sandbox = "sandbox" if os.environ.get("SANDBOX", "1").strip() in ("1", "true", "yes") else "prod"
     logger.info("Starting server port=%s mode=%s", port, sandbox)
     app.run(host="0.0.0.0", port=port, debug=False)
