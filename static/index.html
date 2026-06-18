@@ -159,6 +159,21 @@
     .msg.info { background: rgba(0,200,83,0.1); color: #69f0ae; }
     .loading { opacity: 0.7; }
     .last-update { font-size: 0.97rem; color: var(--muted); margin-left: auto; }
+    /* ===== Toast уведомления ===== */
+    #toastContainer { position:fixed; bottom:1.1rem; right:1.1rem; z-index:99999; display:flex; flex-direction:column-reverse; gap:0.55rem; max-width:400px; pointer-events:none; }
+    .toast { background:#1e2128; border:1px solid #3a3f4b; border-left:4px solid var(--accent); border-radius:8px; padding:0.75rem 1rem 0.85rem; color:var(--text); font-size:1rem; box-shadow:0 6px 24px rgba(0,0,0,0.55); pointer-events:all; cursor:pointer; position:relative; overflow:hidden; animation:toastSlideIn 0.28s cubic-bezier(.2,.8,.4,1); }
+    .toast.toast-warn  { border-left-color:#ff9800; }
+    .toast.toast-error { border-left-color:var(--negative); }
+    .toast.toast-info  { border-left-color:var(--accent); }
+    .toast-title { font-weight:700; margin-bottom:0.2rem; font-size:1.02rem; }
+    .toast-body  { color:#b0b8c8; font-size:0.9rem; line-height:1.4; }
+    .toast-close { position:absolute; top:0.35rem; right:0.5rem; color:var(--muted); font-size:1rem; line-height:1; }
+    .toast-progress { position:absolute; bottom:0; left:0; height:3px; background:var(--accent); }
+    .toast-warn  .toast-progress { background:#ff9800; }
+    .toast-error .toast-progress { background:var(--negative); }
+    @keyframes toastSlideIn  { from { transform:translateX(110%); opacity:0; } to { transform:translateX(0); opacity:1; } }
+    @keyframes toastSlideOut { from { transform:translateX(0);    opacity:1; } to { transform:translateX(110%); opacity:0; } }
+    @keyframes toastShrink   { from { width:100%; } to { width:0%; } }
     .auction-badge {
       background: #ff9800; color: #000;
       padding: 0.2rem 0.4rem; border-radius: 4px;
@@ -224,6 +239,7 @@
   </div>
 
   <div id="message"></div>
+  <div id="toastContainer"></div>
 
   <!-- Divergence panel -->
   <div id="divergencePanel" class="divergence-panel" style="display:none;">
@@ -636,14 +652,43 @@
       return fetch(url,{signal:ctrl.signal,headers}).finally(()=>clearTimeout(t));
     }
 
-    // ===== Notifications =====
-    function startNotifyPolling() {
-      if('Notification' in window&&Notification.permission==='default') Notification.requestPermission();
-      setInterval(async()=>{try{const r=await fetch('/api/notify/poll');if(!r.ok)return;const d=await r.json();for(const n of(d.notifications||[]))showBrowserNotification(n.msg);}catch(_){}},3000);
+    // ===== Toast уведомления =====
+    function showToast(title, body='', {type='info', duration=12000}={}) {
+      const c = document.getElementById('toastContainer');
+      if (!c) return;
+      const t = document.createElement('div');
+      t.className = `toast toast-${type}`;
+      t.innerHTML =
+        `<span class="toast-close" onclick="this.parentElement.remove()">✕</span>` +
+        `<div class="toast-title">${title}</div>` +
+        (body ? `<div class="toast-body">${body}</div>` : '') +
+        `<div class="toast-progress" style="animation:toastShrink ${duration/1000}s linear forwards;"></div>`;
+      t.addEventListener('click', e => { if(!e.target.classList.contains('toast-close')) t.remove(); });
+      c.appendChild(t);
+      setTimeout(() => {
+        t.style.animation = 'toastSlideOut 0.28s cubic-bezier(.2,.8,.4,1) forwards';
+        setTimeout(() => t.remove(), 300);
+      }, duration);
     }
-    function showBrowserNotification(msg) {
-      if(!('Notification'in window)||Notification.permission!=='granted') return;
-      const n=new Notification('Виджет',{body:msg,silent:false}); setTimeout(()=>n.close(),5000);
+
+    // ===== Server notify polling =====
+    function startNotifyPolling() {
+      setInterval(async () => {
+        try {
+          const r = await fetch('/api/notify/poll');
+          if (!r.ok) return;
+          const d = await r.json();
+          for (const n of (d.notifications || [])) {
+            const isDiv = n.msg.startsWith('⚡');
+            const isMov = n.msg.startsWith('🔥');
+            showToast(
+              isDiv ? '⚡ Расхождение фьюч/акция' : isMov ? '🔥 Муверы' : 'Виджет',
+              n.msg.replace(/^[⚡🔥]\s*[^\:]+:\s*/, ''),
+              { type: isDiv ? 'warn' : isMov ? 'error' : 'info', duration: 15000 }
+            );
+          }
+        } catch(_) {}
+      }, 3000);
     }
 
     // ===== Divergence =====
@@ -698,12 +743,12 @@
       }).join('');
     }
     function sendDivNotification(a){
-      const title=`⚡ Расхождение: ${a.stock.ticker}`;
-      const ss=a.stock.change_pct>=0?'+':'',fs=a.futPct>=0?'+':'';
-      const body=`Акция ${ss}${a.stock.change_pct}% · Фьюч ${fs}${a.futPct}% · Разница ${a.diff.toFixed(2)}%`;
-      if('Notification'in window&&Notification.permission==='granted') new Notification(title,{body});
-      const msg=document.getElementById('message');
-      if(msg){msg.className='msg error';msg.textContent=`⚡ ${title}: ${body}`;setTimeout(()=>{if(msg.textContent.startsWith('⚡'))msg.textContent='';},8000);}
+      const ss=a.stock.change_pct>=0?'+':'', fs=a.futPct>=0?'+':'';
+      showToast(
+        `⚡ Расхождение: ${a.stock.ticker}`,
+        `Акция ${ss}${a.stock.change_pct}%&nbsp;&nbsp;·&nbsp;&nbsp;Фьюч ${fs}${a.futPct}%&nbsp;&nbsp;·&nbsp;&nbsp;Δ ${a.diff.toFixed(2)}%`,
+        {type: 'warn', duration: 20000}
+      );
     }
     function startDivergenceMonitor(auction){
       const isFut=auction&&auction.futures_auction;
@@ -1222,23 +1267,40 @@
     function renderMovers(movers) {
       const body = document.getElementById('moversBody');
       if (!movers.length) { body.innerHTML = ''; return; }
+      const hasDiv = movers.some(m => m.divergence_pct != null);
       let html = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.95rem;">';
       html += '<thead><tr style="background:#252830;">';
       html += '<th style="padding:0.3rem 0.5rem;text-align:left;color:var(--muted);">Инструмент</th>';
       html += '<th style="padding:0.3rem 0.5rem;text-align:right;color:var(--muted);">Цена</th>';
       html += '<th style="padding:0.3rem 0.5rem;text-align:right;color:var(--muted);">Закрытие</th>';
-      html += '<th style="padding:0.3rem 0.5rem;text-align:right;">Изм. %</th>';
+      html += '<th style="padding:0.3rem 0.5rem;text-align:right;">Фьюч %</th>';
+      if (hasDiv) {
+        html += '<th style="padding:0.3rem 0.5rem;text-align:right;color:var(--muted);">Акция %</th>';
+        html += '<th style="padding:0.3rem 0.5rem;text-align:right;color:#ff9800;">Расх.</th>';
+      }
       html += '</tr></thead><tbody>';
       movers.forEach((m, i) => {
         const ch = m.change_pct;
         const chColor = ch > 0 ? 'var(--accent)' : 'var(--negative)';
         const chStr = (ch > 0 ? '+' : '') + ch + '%';
-        html += `<tr style="background:${i%2?'#1e2128':'#252830'};">
-          <td style="padding:0.28rem 0.5rem;font-weight:600;">${escapeHtml(m.name||m.instrument_id.slice(0,14))} <span style="color:var(--accent);font-size:0.8em;">✓ в медл.</span></td>
+        const hasDivRow = m.divergence_pct != null;
+        const divAlert = hasDivRow && m.divergence_pct >= 1;
+        const rowBg = divAlert ? 'rgba(255,152,0,0.07)' : (i%2 ? '#1e2128' : '#252830');
+        html += `<tr style="background:${rowBg};">
+          <td style="padding:0.28rem 0.5rem;font-weight:600;">${escapeHtml(m.name||m.instrument_id.slice(0,14))} <span style="color:var(--accent);font-size:0.78em;">✓</span></td>
           <td style="padding:0.28rem 0.5rem;text-align:right;">${m.last_price??'—'}</td>
           <td style="padding:0.28rem 0.5rem;text-align:right;color:var(--muted);">${m.daily_close_price??'—'}</td>
-          <td style="padding:0.28rem 0.5rem;text-align:right;font-weight:700;color:${chColor};">${chStr}</td>
-        </tr>`;
+          <td style="padding:0.28rem 0.5rem;text-align:right;font-weight:700;color:${chColor};">${chStr}</td>`;
+        if (hasDiv) {
+          if (hasDivRow) {
+            const sp = m.stock_change_pct, sc = sp > 0 ? 'var(--accent)' : 'var(--negative)';
+            html += `<td style="padding:0.28rem 0.5rem;text-align:right;color:${sc};">${(sp>0?'+':'')+sp}%</td>`;
+            html += `<td style="padding:0.28rem 0.5rem;text-align:right;font-weight:700;color:${divAlert?'#ff9800':'var(--muted)'};">Δ${m.divergence_pct}%</td>`;
+          } else {
+            html += `<td></td><td></td>`;
+          }
+        }
+        html += `</tr>`;
       });
       html += '</tbody></table></div>';
       body.innerHTML = html;

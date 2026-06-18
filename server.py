@@ -447,6 +447,56 @@ def _background_slow_loop():
     logger.info("Slow background thread stopped")
 
 
+def _get_spot_changes(base_url, headers):
+    """Возвращает {TICKER: change_pct} для голубых фишек.
+    Используется при сравнении фьюча с акцией в фоновом сканере.
+    Дневное закрытие — из кэша (6 ч TTL) или свежий запрос.
+    """
+    instruments_cache = _cache_get("futures") or []
+    spot_instruments = [
+        i for i in instruments_cache
+        if i.get("instrument_type") == "shares"
+        and i.get("ticker", "").upper() in [t.upper() for t in SPOT_TICKERS]
+    ]
+    if not spot_instruments:
+        return {}
+
+    uids = [
+        i.get("instrument_uid") or i.get("figi", "")
+        for i in spot_instruments
+        if i.get("instrument_uid") or i.get("figi")
+    ]
+
+    # Один батч GetLastPrices для всех акций
+    last_prices = {}
+    try:
+        url = f"{base_url}/tinkoff.public.invest.api.contract.v1.MarketDataService/GetLastPrices"
+        resp = requests.post(url, headers=headers,
+                             json={"instrumentId": uids}, timeout=15, verify=False)
+        resp.raise_for_status()
+        for lp in resp.json().get("lastPrices", []):
+            uid   = lp.get("instrumentUid") or lp.get("figi", "")
+            price = _quotation_to_float(lp.get("price"))
+            if uid and price:
+                last_prices[uid] = price
+    except Exception as e:
+        logger.warning("_get_spot_changes GetLastPrices: %s", e)
+        return {}
+
+    result = {}
+    for inst in spot_instruments:
+        ticker = inst.get("ticker", "").upper()
+        uid    = inst.get("instrument_uid") or inst.get("figi", "")
+        last_price = last_prices.get(uid)
+        if not last_price:
+            continue
+        daily_close = _cache_get(f"candle_daily_{uid}") or _fetch_daily_close(uid, base_url, headers)
+        if daily_close and daily_close != 0:
+            result[ticker] = round((last_price - daily_close) / daily_close * 100, 2)
+
+    return result
+
+
 def _warmup_daily_closes():
     """Прогрев кэша дневных закрытий для всего списка скана.
 
@@ -573,7 +623,39 @@ def _run_background_mover_scan():
 
     movers.sort(key=lambda x: abs(x.get("change_pct") or 0), reverse=True)
 
-    now_str = datetime.now(timezone.utc).strftime("%H:%M UTC")
+    # ── Сравниваем с акциями для фьючей на голубые фишки ──
+    tickers_map = {
+        i.get("instrument_uid", ""): i.get("ticker", "").upper()
+        for i in instruments_cache
+    }
+    spot_changes = {}
+    try:
+        spot_changes = _get_spot_changes(base_url, headers)
+        logger.info("Mover scan: получено %d spot изменений", len(spot_changes))
+    except Exception as e:
+        logger.warning("Mover scan: spot changes failed: %s", e)
+
+    divergences = []
+    for m in movers:
+        fut_ticker = tickers_map.get(m["instrument_id"], "").upper()
+        # Ищем совпадение с префиксом фьюча
+        matched_stock = None
+        for fut_prefix, stock_ticker in FUTURES_TO_STOCK.items():
+            if fut_ticker.startswith(fut_prefix):
+                matched_stock = stock_ticker
+                break
+        if matched_stock and matched_stock in spot_changes:
+            stock_pct = spot_changes[matched_stock]
+            fut_pct   = m["change_pct"]
+            div       = round(abs(fut_pct - stock_pct), 2)
+            m["stock_ticker"]    = matched_stock
+            m["stock_change_pct"] = stock_pct
+            m["divergence_pct"]  = div
+            if div >= 1.0:
+                divergences.append(m)
+
+    now_msk = datetime.now(timezone.utc) + timedelta(hours=3)
+    now_str = now_msk.strftime("%H:%M МСК")
     result = {
         "ts": time.time(),
         "ts_str": now_str,
@@ -581,17 +663,18 @@ def _run_background_mover_scan():
         "count": len(movers),
         "scanned": len(last_prices),
         "threshold": threshold,
+        "divergences": divergences,
     }
     with _mover_scan_result_lock:
         _mover_scan_result = result
 
     if movers:
-        # Добавляем найденных в tracked-список (медленный поток начнёт следить)
+        # Добавляем в tracked-список
         with _server_cache_lock:
             for m in movers:
                 _server_cache["tracked"][m["instrument_id"]] = time.time()
 
-        # Браузерное уведомление
+        # Уведомление о муверах
         top3 = ", ".join(
             f"{m['name']} {'+' if m['change_pct']>0 else ''}{m['change_pct']}%"
             for m in movers[:3]
@@ -600,9 +683,20 @@ def _run_background_mover_scan():
         with _notify_lock:
             _notify_queue.append({"id": f"mover_{time.time()}", "msg": msg, "ts": time.time()})
 
-    logger.info("Mover scan: проверено %d, муверов %d (порог %.1f%%): %s",
-                len(last_prices), len(movers), threshold,
-                [m["name"] for m in movers[:5]])
+    # Отдельное уведомление о расхождениях фьюч/акция
+    if divergences:
+        divs_str = ", ".join(
+            f"{d['name']} фьюч {'+' if d['change_pct']>0 else ''}{d['change_pct']}% / "
+            f"{d['stock_ticker']} акц {'+' if d['stock_change_pct']>0 else ''}{d['stock_change_pct']}% "
+            f"(Δ{d['divergence_pct']}%)"
+            for d in divergences[:3]
+        )
+        msg_div = f"⚡ Расхождение фьюч/акция ({len(divergences)}): {divs_str}"
+        with _notify_lock:
+            _notify_queue.append({"id": f"div_{time.time()}", "msg": msg_div, "ts": time.time()})
+
+    logger.info("Mover scan: проверено %d, муверов %d, расхождений %d",
+                len(last_prices), len(movers), len(divergences))
 
 
 def _background_scheduled_loop():
@@ -834,6 +928,8 @@ BLUE_CHIP_FUTURES_MAP = {
     "PHOR":  "PHOR",   # ФосАгро
     "IRAO":  "IRAO",   # Интер РАО
 }
+# Обратный маппинг: префикс_фьюча → тикер_акции
+FUTURES_TO_STOCK = {v.upper(): k for k, v in BLUE_CHIP_FUTURES_MAP.items()}
 
 
 @app.route("/api/spot_prices")
