@@ -239,7 +239,7 @@
 
   <!-- Movers panel -->
   <div id="moversPanel" class="settings-panel" style="display:none;max-height:none;">
-    <h2>🔥 Мувы <small style="color:var(--muted);font-weight:normal;">— сканирует фьючи не в ваших списках, находит &gt;N% и добавляет в 🔄 медленные автоматически</small></h2>
+    <h2>🔥 Мувы <small style="color:var(--muted);font-weight:normal;">— сканирует список фьючей, находит &gt;N% от закрытия, добавляет в 🔄 медленные</small></h2>
     <div style="display:flex;gap:0.55rem;align-items:center;flex-wrap:wrap;margin-bottom:0.6rem;">
       <label style="font-size:1rem;gap:0.3rem;">
         Порог:
@@ -247,12 +247,36 @@
                style="width:4.5rem;padding:0.28rem 0.4rem;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--text);font-size:1rem;" onchange="saveMoverThreshold()">%
       </label>
       <button type="button" onclick="scanMovers()" style="background:var(--accent);color:#000;font-weight:700;">🔍 Сканировать</button>
+      <button type="button" id="btnScanList" onclick="toggleScanListPanel()" title="Выбрать какие фьючи сканировать">⚙️ Список скана <span id="scanListCount" style="color:var(--muted);font-size:0.85em;"></span></button>
       <label style="font-size:0.95rem;gap:0.3rem;color:var(--muted);">
         <input type="checkbox" id="moverAutoScan" onchange="toggleMoverAutoScan()"> Авто каждые 10 мин
       </label>
     </div>
     <div id="moversStatus" style="font-size:0.9rem;color:var(--muted);margin-bottom:0.4rem;"></div>
     <div id="moversBody"></div>
+
+    <!-- Подпанель выбора инструментов для скана -->
+    <div id="scanListPanel" style="display:none;margin-top:0.75rem;border-top:1px solid var(--border);padding-top:0.65rem;">
+      <div style="display:flex;gap:0.4rem;flex-wrap:wrap;align-items:center;margin-bottom:0.5rem;">
+        <b style="color:var(--muted);">Список скана</b>
+        <input type="text" id="scanSearchInput" placeholder="Поиск..." class="search-input" style="max-width:180px;" oninput="renderScanList()">
+        <button type="button" onclick="scanSelectAll()">Все</button>
+        <button type="button" onclick="scanSelectNone()">Снять</button>
+        <button type="button" onclick="saveScanList(this)" style="background:var(--accent);color:#000;font-weight:700;">Сохранить</button>
+      </div>
+      <div class="category-filters" id="scanCategoryFilters">
+        <button type="button" class="category-btn active" data-panel="scan" data-category="all">Все</button>
+        <button type="button" class="category-btn" data-panel="scan" data-category="metals">Металлы</button>
+        <button type="button" class="category-btn" data-panel="scan" data-category="crypto">Крипта</button>
+        <button type="button" class="category-btn" data-panel="scan" data-category="indices">Индексы</button>
+        <button type="button" class="category-btn" data-panel="scan" data-category="currencies">Валюты</button>
+        <button type="button" class="category-btn" data-panel="scan" data-category="commodities">Товары</button>
+        <button type="button" class="category-btn" data-panel="scan" data-category="stocks">Акции (фьюч)</button>
+        <button type="button" class="category-btn" data-panel="scan" data-category="shares">Спот</button>
+        <button type="button" class="category-btn" data-panel="scan" data-category="other">Другое</button>
+      </div>
+      <div class="settings-list" id="scanSettingsList"></div>
+    </div>
   </div>
 
   <!-- Fast instruments panel -->
@@ -443,6 +467,7 @@
     const CURRENT_PROFILE = getProfileFromUrl();
     const STORAGE_FAST_IDS   = 'widget_fast_ids_'     + CURRENT_PROFILE;
     const STORAGE_SLOW_IDS   = 'widget_slow_ids_'     + CURRENT_PROFILE;
+    const STORAGE_SCAN_IDS   = 'widget_scan_ids_'     + CURRENT_PROFILE;
     const STORAGE_NAMES      = 'damir_futures_names';
     const STORAGE_API_KEYS   = 'widget_api_keys_'     + CURRENT_PROFILE;
     const STORAGE_SETTINGS   = 'widget_user_settings_'+ CURRENT_PROFILE;
@@ -468,6 +493,7 @@
     let allFutures = [];
     let fastIds = new Set(JSON.parse(localStorage.getItem(STORAGE_FAST_IDS) || '[]'));
     let slowIds = new Set(JSON.parse(localStorage.getItem(STORAGE_SLOW_IDS) || '[]'));
+    let scanIds = new Set(JSON.parse(localStorage.getItem(STORAGE_SCAN_IDS) || '[]'));
     let namesMap = JSON.parse(localStorage.getItem(STORAGE_NAMES) || '{}');
     let autoRefreshEnabled = true;
     let autoFastTimer = null, autoSlowTimer = null;
@@ -1123,28 +1149,40 @@
         panel.style.display = 'block'; btn.classList.add('active');
         document.getElementById('moverThresholdInput').value = getMoverThreshold();
         document.getElementById('moverAutoScan').checked = localStorage.getItem('mover_auto') === '1';
+        _updateScanListCount();
         if (_lastMovers.length) renderMovers(_lastMovers);
       }
     }
     async function scanMovers() {
-      // Сканируем ТОЛЬКО те инструменты, которых ещё нет ни в быстрых, ни в медленных
       const threshold = getMoverThreshold();
       const status = document.getElementById('moversStatus');
       const body = document.getElementById('moversBody');
-      status.textContent = '⏳ Запрашиваю GetLastPrices для всех фьючей…';
+
+      // Какие ID сканировать: список скана (если настроен) иначе все фьючи
+      const idsToScan = scanIds.size > 0 ? [...scanIds] : [];
+      const idsParam = idsToScan.length ? '&ids=' + idsToScan.join(',') : '';
+
+      const firstScan = idsToScan.length > 0;
+      status.textContent = firstScan
+        ? `⏳ Скан ${idsToScan.length} инструментов…`
+        : '⏳ Скан всех фьючей (GetLastPrices + дневные закрытия)…';
       body.innerHTML = '';
       try {
-        const r = await fetch(`/api/movers?threshold=${threshold}&scan_all=1`);
+        const r = await fetch(`/api/movers?threshold=${threshold}${idsParam}`);
         const data = await r.json();
         if (data.error) { status.textContent = '❌ ' + data.error; return; }
 
-        // Фильтруем: только те, кого нет в fast и slow
+        // Оставляем только те, кого нет в fast или slow
         const allTracked = new Set([...fastIds, ...slowIds]);
         const newMovers = (data.movers || []).filter(m => !allTracked.has(m.instrument_id));
 
+        const cacheNote = data.fetched_closes > 0
+          ? ` (загружено ${data.fetched_closes} закрытий, далее из кэша 6 ч)`
+          : ' (все закрытия из кэша)';
+
         if (!newMovers.length) {
-          status.textContent = `Проверено: ${data.scanned} инструментов — новых муверов нет (порог ${threshold}%)`;
-          body.innerHTML = '<div style="color:var(--muted);padding:0.4rem 0;">Все инструменты с отклонением уже есть в ваших списках.</div>';
+          status.textContent = `Проверено: ${data.scanned} — новых муверов нет (порог ${threshold}%)${cacheNote}`;
+          body.innerHTML = '<div style="color:var(--muted);padding:0.4rem 0;">Муверы за пределами ваших списков не найдены.</div>';
           _updateMoverBadge(0);
           return;
         }
@@ -1152,11 +1190,10 @@
         // Автоматически добавляем в медленные
         newMovers.forEach(m => slowIds.add(m.instrument_id));
         try { localStorage.setItem(STORAGE_SLOW_IDS, JSON.stringify([...slowIds])); } catch(_) {}
-        // Перезапускаем slow-обновление
         if (autoRefreshEnabled) { stopSlowAutoRefresh(); startSlowAutoRefresh(); } else loadSlowData();
 
         _lastMovers = newMovers;
-        status.textContent = `✅ Проверено: ${data.scanned} | Найдено новых муверов: ${newMovers.length} → добавлены в 🔄 Медленные`;
+        status.textContent = `✅ Проверено: ${data.scanned} | Новых муверов: ${newMovers.length} → добавлены в 🔄 Медленные${cacheNote}`;
         renderMovers(newMovers);
         _updateMoverBadge(newMovers.length);
         renderFastTable(); renderSlowTable();
@@ -1203,6 +1240,62 @@
     function stopMoverAutoScan() {
       if (_moverAutoTimer) { clearInterval(_moverAutoTimer); _moverAutoTimer = null; }
     }
+
+    // ===== Scan list =====
+    let _activeScanCat = 'all';
+
+    function _updateScanListCount() {
+      const el = document.getElementById('scanListCount');
+      if (el) el.textContent = scanIds.size > 0 ? `(${scanIds.size})` : '(все)';
+    }
+    function toggleScanListPanel() {
+      const p = document.getElementById('scanListPanel');
+      const isOpen = p.style.display !== 'none';
+      p.style.display = isOpen ? 'none' : 'block';
+      if (!isOpen) {
+        if (allFutures.length === 0) loadFutures().then(() => renderScanList());
+        else renderScanList();
+      }
+    }
+    function renderScanList() {
+      const list = document.getElementById('scanSettingsList');
+      if (!list) return;
+      const q = (document.getElementById('scanSearchInput').value || '').toLowerCase();
+      const items = allFutures.filter(f => {
+        const id = f.instrument_uid || f.figi || '';
+        if (_activeScanCat !== 'all' && (f.category || 'other') !== _activeScanCat) return false;
+        if (q && !(f.name||'').toLowerCase().includes(q) && !(f.ticker||'').toLowerCase().includes(q)) return false;
+        return true;
+      });
+      list.innerHTML = items.map(f => {
+        const id = f.instrument_uid || f.figi || '';
+        const checked = scanIds.has(id) ? 'checked' : '';
+        return `<label><input type="checkbox" value="${id}" ${checked} onchange="scanIds[this.checked?'add':'delete'](this.value);_updateScanListCount();">${escapeHtml(f.name||f.ticker||id)}</label>`;
+      }).join('');
+    }
+    function scanSelectAll() {
+      document.querySelectorAll('#scanSettingsList input[type=checkbox]').forEach(cb => { cb.checked = true; scanIds.add(cb.value); });
+      _updateScanListCount();
+    }
+    function scanSelectNone() {
+      document.querySelectorAll('#scanSettingsList input[type=checkbox]').forEach(cb => { cb.checked = false; scanIds.delete(cb.value); });
+      _updateScanListCount();
+    }
+    function saveScanList(btn) {
+      try { localStorage.setItem(STORAGE_SCAN_IDS, JSON.stringify([...scanIds])); } catch(_) {}
+      _updateScanListCount();
+      const orig = btn.textContent; btn.textContent = '✓ Сохранено'; btn.disabled = true;
+      setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 1500);
+    }
+
+    // Обработка категорий панели скана
+    document.addEventListener('click', e => {
+      const b = e.target.closest('[data-panel="scan"].category-btn');
+      if (!b) return;
+      _activeScanCat = b.dataset.category;
+      document.querySelectorAll('[data-panel="scan"].category-btn').forEach(x => x.classList.toggle('active', x === b));
+      renderScanList();
+    });
 
     // ===== Test stakan =====
     function calcAuctionPrice(bids, asks, refPrice) {

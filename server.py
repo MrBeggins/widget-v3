@@ -855,7 +855,7 @@ def _fetch_5min_candle_close(instrument_id, base_url, headers):
         return None, False
 
 
-CACHE_TTL_DAILY = 300  # 5 минут — дневное закрытие меняется редко
+CACHE_TTL_DAILY = 21600  # 6 часов — дневное закрытие меняется один раз в сутки
 
 
 def _fetch_daily_close(instrument_id, base_url, headers):
@@ -1690,116 +1690,121 @@ def api_movers():
     Инструменты с отклонением от дневного закрытия ≥ threshold%.
 
     Query params:
-        threshold  — порог в % (default 3.0)
-        scan_all   — "1" → сканировать все фьючи через один батч GetLastPrices
-                     "0" (default) → только уже закэшированные инструменты
+        threshold — порог в % (default 3.0)
+        ids       — comma-separated список instrument_uid для скана.
+                    Если не задан — сканируются все фьючи из кэша.
 
-    При scan_all=0 ответ мгновенный (читается из памяти).
-    При scan_all=1 делается один батч-запрос GetLastPrices для всех фьючей,
-    дневное закрытие берётся из orderbook-кэша или candle_daily_кэша.
+    Алгоритм:
+      1. GetLastPrices (1 батч-запрос) — берём последние цены для всех ids
+      2. daily_close берём из orderbook-кэша или candle_daily-кэша (6 ч TTL)
+      3. Для инструментов без кэшированного daily_close: параллельный GetCandles
+         (max 5 потоков, ~4–10 сек на 200 инструментов, потом 6 ч из кэша)
     """
     threshold = float(request.args.get("threshold", 3.0))
-    scan_all = request.args.get("scan_all", "0") in ("1", "true", "yes")
+    ids_param = request.args.get("ids", "").strip()
 
-    movers = []
+    # Определяем список инструментов для скана
+    instruments_cache = _cache_get("futures")
+    if not instruments_cache:
+        return jsonify({"error": "futures not loaded, open widget first",
+                        "movers": [], "count": 0, "scanned": 0, "fetched_closes": 0})
 
-    if scan_all:
-        # ── Полное сканирование: один батч GetLastPrices ──
-        instruments_cache = _cache_get("futures")
-        if not instruments_cache:
-            return jsonify({"error": "futures not loaded, open widget first",
-                            "movers": [], "count": 0, "scanned": 0})
+    token = _get_token_from_request()
+    if not token:
+        return jsonify({"error": "no API token", "movers": [], "count": 0,
+                        "scanned": 0, "fetched_closes": 0})
+    base_url = _get_api_url()
+    headers = _get_headers(token)
 
-        token = _get_token_from_request()
-        if not token:
-            return jsonify({"error": "no API token", "movers": [], "count": 0, "scanned": 0})
-        base_url = _get_api_url()
-        headers = _get_headers(token)
+    # Карта uid → name
+    names = {
+        i.get("instrument_uid", ""): i.get("name") or i.get("ticker") or ""
+        for i in instruments_cache
+    }
 
-        all_ids = [
+    # Список UID для скана
+    if ids_param:
+        scan_ids = [x.strip() for x in ids_param.split(",") if x.strip()]
+    else:
+        scan_ids = [
             i.get("instrument_uid") or i.get("figi", "")
             for i in instruments_cache
             if i.get("instrument_uid") or i.get("figi")
         ]
 
-        # Один батч-запрос последних цен для всех инструментов
-        last_prices = {}
-        try:
-            url = f"{base_url}/tinkoff.public.invest.api.contract.v1.MarketDataService/GetLastPrices"
-            resp = requests.post(url, headers=headers,
-                                 json={"instrumentId": all_ids}, timeout=25, verify=False)
-            resp.raise_for_status()
-            for lp in resp.json().get("lastPrices", []):
-                uid = lp.get("instrumentUid") or lp.get("figi", "")
-                price = _quotation_to_float(lp.get("price"))
-                if uid and price:
-                    last_prices[uid] = price
-        except Exception as e:
-            logger.warning("api_movers scan_all GetLastPrices: %s", e)
-            return jsonify({"error": str(e), "movers": [], "count": 0, "scanned": 0})
+    # ── Шаг 1: GetLastPrices — один батч для всех ──
+    last_prices = {}
+    try:
+        url = f"{base_url}/tinkoff.public.invest.api.contract.v1.MarketDataService/GetLastPrices"
+        resp = requests.post(url, headers=headers,
+                             json={"instrumentId": scan_ids}, timeout=25, verify=False)
+        resp.raise_for_status()
+        for lp in resp.json().get("lastPrices", []):
+            uid = lp.get("instrumentUid") or lp.get("figi", "")
+            price = _quotation_to_float(lp.get("price"))
+            if uid and price:
+                last_prices[uid] = price
+    except Exception as e:
+        logger.warning("api_movers GetLastPrices: %s", e)
+        return jsonify({"error": str(e), "movers": [], "count": 0,
+                        "scanned": 0, "fetched_closes": 0})
 
-        names = {
-            i.get("instrument_uid", ""): i.get("name") or i.get("ticker") or ""
-            for i in instruments_cache
-        }
+    # ── Шаг 2: собираем кэшированные daily_close ──
+    with _server_cache_lock:
+        ob_snap = {k: dict(v) for k, v in _server_cache["orderbook"].items()}
 
-        with _server_cache_lock:
-            ob_snap = {k: dict(v) for k, v in _server_cache["orderbook"].items()}
+    daily_closes = {}
+    for uid in last_prices:
+        dc = None
+        if uid in ob_snap:
+            d = ob_snap[uid].get("data", {})
+            dc = d.get("daily_close_price") or d.get("close_price")
+        if dc is None:
+            dc = _cache_get(f"candle_daily_{uid}")
+        if dc:
+            daily_closes[uid] = dc
 
-        for uid, last_price in last_prices.items():
-            # Дневное закрытие: orderbook-кэш > candle_daily-кэш
-            daily_close = None
-            if uid in ob_snap:
-                d = ob_snap[uid].get("data", {})
-                daily_close = d.get("daily_close_price") or d.get("close_price")
-            if daily_close is None:
-                daily_close = _cache_get(f"candle_daily_{uid}")
+    # ── Шаг 3: параллельный fetch для тех, у кого нет daily_close ──
+    missing = [uid for uid in last_prices if uid not in daily_closes]
+    fetched_closes = 0
 
-            if daily_close and daily_close != 0:
-                change = round((last_price - daily_close) / daily_close * 100, 2)
-                if abs(change) >= threshold:
-                    movers.append({
-                        "instrument_id": uid,
-                        "name": names.get(uid, uid[:12]),
-                        "last_price": round(last_price, 4),
-                        "daily_close_price": round(daily_close, 4),
-                        "change_pct": change,
-                        "direction": "up" if change > 0 else "down",
-                        "age_sec": 0,
-                    })
+    if missing:
+        logger.info("api_movers: fetching daily_close for %d instruments in parallel", len(missing))
 
-        scanned = len(last_prices)
+        def _fetch_one(uid):
+            return uid, _fetch_daily_close(uid, base_url, headers)
 
-    else:
-        # ── Быстрое сканирование: только закэшированные инструменты ──
-        with _server_cache_lock:
-            ob_snap = {k: dict(v) for k, v in _server_cache["orderbook"].items()}
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            for uid, dc in pool.map(_fetch_one, missing):
+                if dc:
+                    daily_closes[uid] = dc
+                    fetched_closes += 1
 
-        for iid, entry in ob_snap.items():
-            data = entry.get("data", {})
-            change = data.get("change_pct")
-            if change is None:
-                change = data.get("deviation_pct")
-            if change is not None and abs(change) >= threshold:
-                movers.append({
-                    "instrument_id": iid,
-                    "name": data.get("name", iid[:12]),
-                    "last_price": data.get("last_price"),
-                    "daily_close_price": data.get("daily_close_price") or data.get("close_price"),
-                    "change_pct": round(float(change), 2),
-                    "direction": "up" if change > 0 else "down",
-                    "age_sec": round(time.time() - entry.get("updated_at", time.time())),
-                })
-
-        scanned = len(ob_snap)
+    # ── Шаг 4: находим муверов ──
+    movers = []
+    for uid, last_price in last_prices.items():
+        daily_close = daily_closes.get(uid)
+        if not daily_close or daily_close == 0:
+            continue
+        change = round((last_price - daily_close) / daily_close * 100, 2)
+        if abs(change) >= threshold:
+            movers.append({
+                "instrument_id": uid,
+                "name": names.get(uid, uid[:12]),
+                "last_price": round(last_price, 4),
+                "daily_close_price": round(daily_close, 4),
+                "change_pct": change,
+                "direction": "up" if change > 0 else "down",
+            })
 
     movers.sort(key=lambda x: abs(x.get("change_pct") or 0), reverse=True)
     return jsonify({
         "movers": movers,
         "count": len(movers),
         "threshold": threshold,
-        "scanned": scanned,
-        "scan_all": scan_all,
+        "scanned": len(last_prices),
+        "fetched_closes": fetched_closes,   # сколько дневных закрытий было запрошено (0 после прогрева)
+        "cached_closes": len(daily_closes) - fetched_closes,
     })
 
 
