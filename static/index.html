@@ -314,13 +314,16 @@
 
   <!-- Auction log panel -->
   <div id="auctionLogPanel" class="test-panel" style="display:none;">
-    <h2>📋 Лог аукциона — сырые данные API</h2>
+    <h2>📋 Лог аукциона — предсказание vs факт</h2>
     <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-bottom:0.6rem;">
       <button type="button" onclick="loadAuctionLog()" style="background:var(--accent);color:#000;font-weight:700;">↺ Обновить</button>
-      <button type="button" onclick="clearAuctionLog()" style="color:var(--negative);">Очистить лог</button>
+      <button type="button" onclick="clearAuctionLog()" style="color:var(--negative);">Очистить</button>
+      <label style="display:flex;align-items:center;gap:0.35rem;font-size:0.9rem;">
+        <input type="checkbox" id="logShowRaw"> Показать сырые снимки
+      </label>
       <span id="auctionLogStatus" style="font-size:0.9rem;color:var(--muted);"></span>
     </div>
-    <div id="auctionLogBody" style="font-size:0.88rem;"></div>
+    <div id="auctionLogBody" style="font-size:0.9rem;"></div>
   </div>
 
   <!-- Test stakan panel -->
@@ -955,59 +958,90 @@
     // ===== Auction Log =====
     async function loadAuctionLog() {
       const status = document.getElementById('auctionLogStatus');
-      const body = document.getElementById('auctionLogBody');
+      const body   = document.getElementById('auctionLogBody');
+      const showRaw = document.getElementById('logShowRaw').checked;
       status.textContent = 'Загрузка…';
       try {
-        const r = await fetch('/api/auction_log?limit=200');
-        const data = await r.json();
-        status.textContent = `Записей: ${data.count}` + (data.count === 0 ? ' (лог пуст — ждём аукциона)' : '');
-        if (!data.entries.length) { body.innerHTML = '<div style="color:var(--muted);padding:0.5rem;">Лог пуст. Данные появятся во время аукциона (06:48–07:02, 08:48–09:02, 18:38–18:52 МСК).</div>'; return; }
-
-        // Группируем по инструменту
-        const byId = {};
-        data.entries.forEach(e => { (byId[e.instrument_id] = byId[e.instrument_id]||[]).push(e); });
+        const [resR, logR] = await Promise.all([
+          fetch('/api/auction_results'),
+          showRaw ? fetch('/api/auction_log?limit=100') : Promise.resolve(null),
+        ]);
+        const resData = await resR.json();
+        const logData = logR ? await logR.json() : null;
 
         let html = '';
-        for (const [iid, entries] of Object.entries(byId)) {
-          const name = window._namesMap && window._namesMap[iid] ? window._namesMap[iid] : iid.slice(0,8)+'…';
-          html += `<details style="margin-bottom:0.5rem;" open>
-            <summary style="cursor:pointer;font-weight:700;color:var(--accent);padding:0.3rem 0;">
-              ${name} <span style="color:var(--muted);font-weight:normal;font-size:0.82rem;">(${entries.length} снимков)</span>
-            </summary>`;
-          entries.slice(0, 10).forEach((e, ei) => {
-            // API мета
-            const meta = e.api_meta || {};
-            const apiFields = Object.entries(meta).map(([k,v])=>`<b>${k}</b>: ${JSON.stringify(v)}`).join(' &nbsp; ');
-            // Биды/аски таблица
-            const makeTable = (rows, color) => {
-              if (!rows.length) return '<i style="color:var(--muted)">пусто</i>';
-              return `<table style="border-collapse:collapse;font-size:0.8rem;"><thead><tr>
-                <th style="color:var(--muted);padding:0.1rem 0.4rem;">Цена</th>
-                <th style="color:var(--muted);padding:0.1rem 0.4rem;">Лоты</th></tr></thead><tbody>`+
-                rows.map(r=>`<tr><td style="padding:0.1rem 0.4rem;color:${color}">${r.p}</td><td style="padding:0.1rem 0.4rem;">${r.q}</td></tr>`).join('')+
-                '</tbody></table>';
-            };
-            const calcColor = e.calc_price ? 'var(--accent)' : 'var(--negative)';
-            html += `<div style="background:var(--bg);border-radius:6px;padding:0.5rem 0.65rem;margin:0.3rem 0;border-left:3px solid ${calcColor}">
-              <div style="font-size:0.82rem;color:var(--muted);margin-bottom:0.25rem;">${e.ts_str} &nbsp;|&nbsp;
-                <b style="color:${calcColor}">Цена: ${e.calc_price ?? 'нет пересечения'}</b> &nbsp;|&nbsp;
-                Исп: ${e.executed} &nbsp;|&nbsp; Дисб: ${e.imbalance} (${e.direction||'—'}) &nbsp;|&nbsp;
-                Реф: ${e.ref_price ?? '—'}
-              </div>
-              <div style="font-size:0.78rem;color:var(--muted);margin-bottom:0.3rem;word-break:break-all;">${apiFields}</div>
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;">
-                <div><div style="font-size:0.78rem;color:var(--accent);margin-bottom:0.15rem;">📈 Биды (${e.bids.length})</div>${makeTable(e.bids,'var(--accent)')}</div>
-                <div><div style="font-size:0.78rem;color:var(--negative);margin-bottom:0.15rem;">📉 Аски (${e.asks.length})</div>${makeTable(e.asks,'var(--negative)')}</div>
-              </div>
-            </div>`;
-          });
-          if (entries.length > 10) html += `<div style="color:var(--muted);font-size:0.82rem;padding:0.2rem;">… ещё ${entries.length-10} снимков</div>`;
-          html += '</details>';
+
+        // ── Таблица сравнений ──
+        if (!resData.results.length) {
+          html += `<div style="background:var(--bg);border-radius:6px;padding:0.75rem;color:var(--muted);margin-bottom:0.75rem;">
+            ⏳ Результаты появятся после окончания аукциона.<br>
+            Аукционы: <b>06:48–07:02</b>, <b>08:48–09:02</b>, <b>18:38–18:52</b> МСК.<br>
+            Во время аукциона виджет собирает предсказания — итог зафиксируется через ~10 сек после закрытия.
+          </div>`;
+        } else {
+          status.textContent = `Результатов: ${resData.count}`;
+          // Группируем по сессии
+          const bySess = {};
+          resData.results.forEach(r => { (bySess[r.session]=bySess[r.session]||[]).push(r); });
+          for (const [sess, rows] of Object.entries(bySess)) {
+            html += `<div style="font-weight:700;color:var(--muted);margin:0.5rem 0 0.3rem;">🕐 Сессия ${sess}</div>`;
+            html += `<div style="overflow-x:auto;margin-bottom:0.75rem;"><table style="width:100%;border-collapse:collapse;font-size:0.92rem;">
+              <thead><tr style="background:#252830;">
+                <th style="padding:0.3rem 0.5rem;text-align:left;color:var(--muted);">Инструмент</th>
+                <th style="padding:0.3rem 0.5rem;text-align:right;color:var(--accent);">Предсказано</th>
+                <th style="padding:0.3rem 0.5rem;text-align:right;color:var(--muted);">Исп. лоты</th>
+                <th style="padding:0.3rem 0.5rem;text-align:right;color:var(--muted);">Дисб.</th>
+                <th style="padding:0.3rem 0.5rem;text-align:right;color:#e6e8ec;">Факт цена</th>
+                <th style="padding:0.3rem 0.5rem;text-align:right;color:#e6e8ec;">Факт объём</th>
+                <th style="padding:0.3rem 0.5rem;text-align:right;">Расхождение</th>
+                <th style="padding:0.3rem 0.5rem;text-align:right;color:var(--muted);">Bid/Ask</th>
+                <th style="padding:0.3rem 0.5rem;text-align:right;color:var(--muted);">Время</th>
+              </tr></thead><tbody>`;
+            rows.forEach((r,i) => {
+              const diff = r.diff_pct;
+              const diffColor = diff == null ? 'var(--muted)' : Math.abs(diff)<0.1 ? 'var(--accent)' : Math.abs(diff)<0.5 ? '#ff9800' : 'var(--negative)';
+              const diffStr = diff == null ? '—' : (diff>0?'+':'')+diff+'%';
+              const noFact = r.actual_price == null;
+              html += `<tr style="background:${i%2?'#1e2128':'#252830'};">
+                <td style="padding:0.28rem 0.5rem;font-weight:600;">${r.name||r.instrument_id.slice(0,10)}</td>
+                <td style="padding:0.28rem 0.5rem;text-align:right;color:var(--accent);font-weight:700;">${r.predicted_price??'—'}</td>
+                <td style="padding:0.28rem 0.5rem;text-align:right;color:var(--muted);">${r.predicted_exec??'—'}</td>
+                <td style="padding:0.28rem 0.5rem;text-align:right;color:var(--muted);">${r.predicted_imb??'—'} ${r.direction?'('+r.direction+')':''}</td>
+                <td style="padding:0.28rem 0.5rem;text-align:right;font-weight:700;">${noFact?'<span style=color:var(--muted)>ждём…</span>':r.actual_price}</td>
+                <td style="padding:0.28rem 0.5rem;text-align:right;">${r.actual_volume||'—'}</td>
+                <td style="padding:0.28rem 0.5rem;text-align:right;font-weight:700;color:${diffColor};">${noFact?'—':diffStr}</td>
+                <td style="padding:0.28rem 0.5rem;text-align:right;font-size:0.82rem;color:var(--muted);">${r.last_bid??'—'} / ${r.last_ask??'—'}</td>
+                <td style="padding:0.28rem 0.5rem;text-align:right;font-size:0.82rem;color:var(--muted);">${r.ts_str}</td>
+              </tr>`;
+            });
+            html += '</tbody></table></div>';
+          }
         }
+
+        // ── Сырые снимки (если включено) ──
+        if (showRaw && logData && logData.entries.length) {
+          html += `<details style="margin-top:0.5rem;"><summary style="cursor:pointer;color:var(--muted);font-size:0.88rem;">🔬 Сырые снимки стакана (${logData.count})</summary><div style="margin-top:0.4rem;">`;
+          const byId = {};
+          logData.entries.forEach(e => { (byId[e.instrument_id]=byId[e.instrument_id]||[]).push(e); });
+          for (const [iid, entries] of Object.entries(byId)) {
+            const nm = window._namesMap&&window._namesMap[iid]?window._namesMap[iid]:iid.slice(0,10);
+            html += `<div style="font-weight:600;color:var(--accent);margin:0.3rem 0 0.15rem;">${nm}</div>`;
+            entries.slice(0,5).forEach(e => {
+              const mkTbl = (rows, color) => rows.slice(0,10).map(r=>`<span style="color:${color}">${r.p}</span>×${r.q}`).join('  ');
+              html += `<div style="background:var(--bg);padding:0.3rem 0.5rem;border-radius:4px;margin-bottom:0.2rem;font-size:0.82rem;">
+                <span style="color:var(--muted)">${e.ts_str}</span>
+                &nbsp; <b style="color:var(--accent)">${e.calc_price??'нет'}</b>
+                &nbsp; исп:${e.executed} дисб:${e.imbalance}(${e.direction||'—'})
+                &nbsp; <span style="color:var(--accent)">${mkTbl(e.bids||[],'var(--accent)')}</span>
+                &nbsp;|&nbsp; <span style="color:var(--negative)">${mkTbl(e.asks||[],'var(--negative)')}</span>
+              </div>`;
+            });
+          }
+          html += '</div></details>';
+        }
+
         body.innerHTML = html;
-      } catch(e) {
-        status.textContent = 'Ошибка: ' + e.message;
-      }
+      } catch(e) { status.textContent = 'Ошибка: ' + e.message; }
     }
     async function clearAuctionLog() {
       await fetch('/api/auction_log/clear');

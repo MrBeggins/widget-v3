@@ -70,8 +70,19 @@ _notify_queue = []   # [{"id": str, "msg": str, "ts": float}]
 _notify_lock = threading.Lock()
 
 # ========== Лог аукциона (чёрный ящик) ==========
-MAX_AUCTION_LOG = 200          # макс. записей в памяти
-_auction_log   = []            # [{...}, ...]
+MAX_AUCTION_LOG     = 500      # макс. записей в памяти (весь журнал)
+MAX_AUCTION_RESULTS = 200      # макс. итоговых сравнений
+
+# Последнее предсказание за аукцион, per-instrument (перезаписывается каждый тик)
+_auction_predictions = {}      # {instrument_id: {calc_price, executed, imbalance, ...}}
+_auction_predictions_lock = threading.Lock()
+
+# Итоговые сравнения: предсказание vs факт
+_auction_results = []          # [{session, instrument_id, predicted_price, actual_price, ...}]
+_auction_results_lock = threading.Lock()
+
+# Сырой журнал снимков (для отладки алгоритма)
+_auction_log   = []
 _auction_log_lock = threading.Lock()
 
 
@@ -289,7 +300,10 @@ def _background_fast_loop():
     global _background_running
     logger.info("Fast background thread started")
 
-    _candle_last_update = {}  # {instrument_id: timestamp последнего обновления свечи}
+    _candle_last_update  = {}  # {instrument_id: timestamp последнего обновления свечи}
+    _prev_is_auction     = False
+    _post_auction_ticks  = 0   # отсчёт тиков после конца аукциона
+    _post_auction_session = ""
 
     while _background_running:
         try:
@@ -304,6 +318,15 @@ def _background_fast_loop():
                 base_url = _get_api_url()
                 auction_info = _is_auction_time()
                 is_auction = auction_info.get("is_any_auction", False)
+
+                # ── Детектируем конец аукциона ──
+                if _prev_is_auction and not is_auction:
+                    import datetime
+                    session_label = datetime.datetime.now().strftime("%d.%m %H:%M")
+                    logger.info("Auction ended at %s — scheduling result capture in 1 cycle", session_label)
+                    _post_auction_ticks = 1   # захватим факт через 1 цикл (~10 сек)
+                    _post_auction_session = session_label
+                _prev_is_auction = is_auction
                 now = time.time()
                 n_workers = len(server_tokens)
 
@@ -326,6 +349,15 @@ def _background_fast_loop():
                     }
                     for future in as_completed(futures):
                         pass
+
+                # ── Снимаем факт через 1 цикл после окончания аукциона ──
+                if _post_auction_ticks > 0:
+                    _post_auction_ticks -= 1
+                    if _post_auction_ticks == 0:
+                        try:
+                            _capture_auction_results(_post_auction_session)
+                        except Exception as _cap_err:
+                            logger.warning("capture_auction_results error: %s", _cap_err)
 
                 interval = BACKGROUND_INTERVAL_AUCTION if is_auction else BACKGROUND_INTERVAL_NORMAL
                 logger.debug("Fast loop done, sleeping %ds", interval)
@@ -1198,15 +1230,14 @@ def _calculate_auction_price(bids, asks, reference_price=None):
 
 def _auction_log_add(instrument_id, raw_api_data, bids_parsed, asks_parsed,
                      calc_price, executed, imbalance, direction, ref_price, levels):
-    """Записать снимок стакана в лог аукциона."""
-    now = time.time()
+    """Записать снимок стакана в лог аукциона и обновить предсказание."""
     import datetime
+    now = time.time()
     ts_str = datetime.datetime.fromtimestamp(now).strftime("%H:%M:%S.%f")[:-3]
 
     # Сырые поля из ответа API (без bids/asks — они отдельно)
     api_meta = {k: v for k, v in raw_api_data.items() if k not in ("bids", "asks")}
 
-    # Конвертируем биды/аски в читаемый формат
     def parse_side(raw_list):
         out = []
         for item in raw_list:
@@ -1216,28 +1247,43 @@ def _auction_log_add(instrument_id, raw_api_data, bids_parsed, asks_parsed,
                 out.append({"p": round(p, 4), "q": q})
         return out
 
+    bids_clean = parse_side(bids_parsed)
+    asks_clean = parse_side(asks_parsed)
+
+    # ── Обновляем «последнее предсказание» для этого инструмента ──
+    with _auction_predictions_lock:
+        _auction_predictions[instrument_id] = {
+            "ts": now,
+            "ts_str": ts_str,
+            "calc_price":  round(calc_price, 4) if calc_price else None,
+            "executed":    executed,
+            "imbalance":   imbalance,
+            "direction":   direction,
+            "ref_price":   ref_price,
+            "n_bids":      len(bids_clean),
+            "n_asks":      len(asks_clean),
+            "best_bid":    bids_clean[0]["p"]  if bids_clean else None,
+            "best_ask":    asks_clean[0]["p"]  if asks_clean else None,
+            "api_meta":    api_meta,
+            # Сырые биды/аски (последний снимок)
+            "bids":        bids_clean,
+            "asks":        asks_clean,
+        }
+
+    # ── Сырой журнал снимков (для отладки) ──
     entry = {
-        "ts": now,
-        "ts_str": ts_str,
+        "ts": now, "ts_str": ts_str,
         "instrument_id": instrument_id,
-        "api_meta": api_meta,           # lastPrice, closePrice, limitUp, limitDown, etc.
-        "bids": parse_side(bids_parsed),
-        "asks": parse_side(asks_parsed),
         "calc_price": round(calc_price, 4) if calc_price else None,
-        "executed": executed,
-        "imbalance": imbalance,
-        "direction": direction,
+        "executed": executed, "imbalance": imbalance, "direction": direction,
         "ref_price": ref_price,
-        "levels": [                     # кумулятивные уровни
-            {
-                "price": round(l["price"], 4),
-                "bid_qty": l.get("bid_qty", 0),
-                "ask_qty": l.get("ask_qty", 0),
-                "cum_bid": l.get("cum_bid", 0),
-                "cum_ask": l.get("cum_ask", 0),
-                "executed": l.get("executed", 0),
-                "imbalance": l.get("imbalance", 0),
-            }
+        "api_meta": api_meta,
+        "bids": bids_clean, "asks": asks_clean,
+        "levels": [
+            {"price": round(l["price"], 4),
+             "bid_qty": l.get("bid_qty", 0), "ask_qty": l.get("ask_qty", 0),
+             "cum_bid": l.get("cum_bid", 0), "cum_ask": l.get("cum_ask", 0),
+             "executed": l.get("executed", 0), "imbalance": l.get("imbalance", 0)}
             for l in (levels or [])
         ],
     }
@@ -1245,6 +1291,67 @@ def _auction_log_add(instrument_id, raw_api_data, bids_parsed, asks_parsed,
         _auction_log.append(entry)
         if len(_auction_log) > MAX_AUCTION_LOG:
             del _auction_log[0]
+
+
+def _capture_auction_results(session_label):
+    """Снять фактические цены открытия после окончания аукциона.
+
+    Вызывается через ~1 цикл (10 сек) после перехода аукцион→торги,
+    когда lastPrice в стакане уже отражает реальную цену открытия.
+    """
+    import datetime
+    with _auction_predictions_lock:
+        predictions = dict(_auction_predictions)
+        _auction_predictions.clear()   # сбросить для следующего аукциона
+
+    if not predictions:
+        return
+
+    with _server_cache_lock:
+        ob_cache = {iid: v.get("data", {}) for iid, v in _server_cache["orderbook"].items()}
+
+    new_results = []
+    now = time.time()
+    for iid, pred in predictions.items():
+        ob = ob_cache.get(iid, {})
+        actual_price = ob.get("last_price") or ob.get("best_bid") or ob.get("best_ask")
+        # Объём — реально исполненных лотов на открытии нет в стакане,
+        # берём наше предсказание исполненных + наблюдаемый объём из кэша
+        actual_volume = ob.get("executed_lots") or ob.get("total_lots") or 0
+
+        diff_pct = None
+        if actual_price and pred.get("calc_price"):
+            diff_pct = round(
+                (actual_price - pred["calc_price"]) / pred["calc_price"] * 100, 3
+            )
+
+        new_results.append({
+            "session":          session_label,
+            "instrument_id":    iid,
+            "ts":               now,
+            "ts_str":           datetime.datetime.fromtimestamp(now).strftime("%H:%M:%S"),
+            # Наше предсказание (последний тик аукциона)
+            "predicted_price":  pred.get("calc_price"),
+            "predicted_exec":   pred.get("executed"),
+            "predicted_imb":    pred.get("imbalance"),
+            "direction":        pred.get("direction"),
+            "last_bid":         pred.get("best_bid"),
+            "last_ask":         pred.get("best_ask"),
+            # Факт
+            "actual_price":     round(actual_price, 4) if actual_price else None,
+            "actual_volume":    actual_volume,
+            "diff_pct":         diff_pct,
+        })
+        logger.info(
+            "Auction result %s: predicted=%.2f actual=%s diff=%s%%",
+            iid, pred.get("calc_price") or 0,
+            actual_price, diff_pct
+        )
+
+    with _auction_results_lock:
+        _auction_results.extend(new_results)
+        if len(_auction_results) > MAX_AUCTION_RESULTS:
+            del _auction_results[:len(_auction_results) - MAX_AUCTION_RESULTS]
 
 
 def _fetch_orderbook_direct(instrument_id, base_url, headers, depth=50):
@@ -1535,7 +1642,34 @@ def auction_log_clear():
     """Очистить лог аукциона."""
     with _auction_log_lock:
         _auction_log.clear()
+    with _auction_predictions_lock:
+        _auction_predictions.clear()
+    with _auction_results_lock:
+        _auction_results.clear()
     return jsonify({"ok": True, "msg": "Auction log cleared"})
+
+
+@app.route("/api/auction_results")
+def auction_results_get():
+    """Итоговая таблица сравнений: предсказание vs факт."""
+    with _auction_results_lock:
+        results = list(_auction_results)
+    # Свежие сначала
+    results = results[::-1]
+    # Имена инструментов из кэша (если есть)
+    names = {}
+    try:
+        with open(os.path.join(os.path.dirname(__file__), "static", "futures_cache.json"),
+                  encoding="utf-8") as f:
+            import json as _json
+            cache = _json.load(f)
+            for item in cache.get("futures", []):
+                names[item.get("uid", "")] = item.get("name") or item.get("ticker") or ""
+    except Exception:
+        pass
+    for r in results:
+        r["name"] = names.get(r["instrument_id"], r["instrument_id"][:12])
+    return jsonify({"count": len(results), "results": results})
 
 
 def main():
