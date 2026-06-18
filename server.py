@@ -22,13 +22,15 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ========== Конфигурация ==========
-# Лимиты T-Invest API: 600 запросов/мин на сервис котировок
-# При 4 сек интервале: 15 обновлений/мин × N инструментов ≤ 600 → N ≈ 40
-# С небольшим запасом используем 40 инструментов
-MAX_CACHED_INSTRUMENTS = 40
-BACKGROUND_INTERVAL_AUCTION = 4      # 4 секунды во время аукциона
-BACKGROUND_INTERVAL_NORMAL = 3600    # 60 минут вне аукциона
+# Лимиты T-Invest API: 600 запросов/мин на токен
+# При нескольких токенах (TINKOFF_INVEST_TOKEN через запятую) суммарный лимит умножается.
+# При 3 токенах и 2 сек интервале: 30 req/s × 3 = 90 req/s → ~40 инструментов комфортно.
+# Свечи обновляются отдельно раз в 30 сек — не каждый цикл.
+MAX_CACHED_INSTRUMENTS = 200
+BACKGROUND_INTERVAL_AUCTION = 2      # 2 секунды во время аукциона
+BACKGROUND_INTERVAL_NORMAL = 60      # 60 секунд вне аукциона
 ACTIVE_INSTRUMENT_TTL = 300          # 5 минут - инструмент считается активным
+CANDLE_UPDATE_INTERVAL = 30          # свечи обновляем раз в 30 сек
 
 # ========== Кэширование ==========
 # TTL в секундах
@@ -218,80 +220,94 @@ app = Flask(__name__, static_folder="static", static_url_path="")
 
 def _background_update_loop():
     """Фоновый поток: обновляет данные по активным инструментам.
-    Работает только если задан серверный токен TINKOFF_INVEST_TOKEN (опционально).
-    Без серверного токена данные запрашиваются напрямую с токеном пользователя."""
+
+    Поддерживает несколько токенов (TINKOFF_INVEST_TOKEN через запятую) —
+    каждый инструмент обслуживается своим токеном по круговой ротации.
+
+    Стаканы — каждый цикл (2 сек при аукционе, 60 сек в обычное время).
+    Свечи — раз в CANDLE_UPDATE_INTERVAL секунд (не каждый цикл).
+    """
     global _background_running
     logger.info("Background update thread started")
 
+    _candle_last_update = {}  # {instrument_id: timestamp последнего обновления свечи}
+
     while _background_running:
         try:
-            # Без серверного токена фоновый поток простаивает
-            server_token = os.environ.get("TINKOFF_INVEST_TOKEN", "").strip()
-            if not server_token:
+            server_tokens = _get_server_tokens()
+            if not server_tokens:
+                # Без серверных токенов фоновый поток простаивает
                 time.sleep(30)
                 continue
 
-            # Получаем список активных инструментов
             active_ids = _get_active_instruments()
-            
+
             if active_ids:
                 base_url = _get_api_url()
-                headers = _get_headers()
-                
-                # Определяем интервал (аукцион или нет)
                 auction_info = _is_auction_time()
                 is_auction = auction_info.get("is_any_auction", False)
-                
-                logger.info("Background update: %d instruments, auction=%s", 
-                           len(active_ids), is_auction)
-                
-                # Обновляем данные для каждого инструмента
-                for instrument_id in active_ids:
+                now = time.time()
+
+                logger.info("Background update: %d instruments, auction=%s, tokens=%d",
+                            len(active_ids), is_auction, len(server_tokens))
+
+                for i, instrument_id in enumerate(active_ids):
                     if not _background_running:
                         break
-                    
+
+                    # Round-robin: каждый инструмент получает свой токен
+                    token = server_tokens[i % len(server_tokens)]
+                    headers = _get_headers(token)
+
                     try:
-                        # Обновляем стакан (всегда)
+                        # Стакан — каждый цикл
                         orderbook_data = _fetch_orderbook_direct(
                             instrument_id, base_url, headers, depth=50
                         )
                         if orderbook_data and "error" not in orderbook_data:
-                            # Во время аукциона не кэшируем пустой стакан (нет цены) — чтобы следующий запрос попробовал снова
+                            # Во время аукциона не кэшируем пустой стакан
                             if not is_auction or orderbook_data.get("auction_price") is not None:
                                 _set_cached_orderbook(instrument_id, orderbook_data)
-                        
-                        # Обновляем свечи (реже, раз в минуту достаточно)
-                        candle_data = _fetch_5min_candle_direct(
-                            instrument_id, base_url, headers
-                        )
-                        if candle_data is not None:
-                            _set_cached_candle(instrument_id, candle_data)
-                        
-                        # Небольшая пауза между запросами, чтобы не превысить лимит
-                        time.sleep(0.05)
-                        
+
+                        # Свечи — только раз в CANDLE_UPDATE_INTERVAL секунд
+                        last_candle_ts = _candle_last_update.get(instrument_id, 0)
+                        if now - last_candle_ts >= CANDLE_UPDATE_INTERVAL:
+                            candle_data = _fetch_5min_candle_direct(
+                                instrument_id, base_url, headers
+                            )
+                            if candle_data is not None:
+                                _set_cached_candle(instrument_id, candle_data)
+                            _candle_last_update[instrument_id] = now
+
+                        # Пауза между запросами (уменьшена т.к. нагрузка распределяется по токенам)
+                        time.sleep(0.02)
+
                     except Exception as e:
-                        logger.warning("Background update error for %s: %s", 
-                                      instrument_id, e)
-                
-                # Определяем интервал до следующего обновления
+                        logger.warning("Background update error for %s: %s",
+                                       instrument_id, e)
+
                 interval = BACKGROUND_INTERVAL_AUCTION if is_auction else BACKGROUND_INTERVAL_NORMAL
                 logger.debug("Next background update in %d seconds", interval)
-                
-                # Спим с проверкой флага остановки
+
                 for _ in range(int(interval * 10)):
                     if not _background_running:
                         break
                     time.sleep(0.1)
             else:
-                # Нет активных инструментов — спим дольше
                 time.sleep(5)
-                
+
         except Exception as e:
             logger.exception("Background update loop error: %s", e)
             time.sleep(5)
-    
+
     logger.info("Background update thread stopped")
+
+
+def _get_server_tokens():
+    """Получить список серверных токенов из TINKOFF_INVEST_TOKEN (через запятую).
+    Поддерживает несколько токенов для ротации нагрузки на API."""
+    token_str = os.environ.get("TINKOFF_INVEST_TOKEN", "").strip()
+    return [t.strip() for t in token_str.split(",") if t.strip()]
 
 
 def _start_background_thread():

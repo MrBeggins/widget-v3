@@ -293,7 +293,7 @@
       </div>
       <div>
         <div style="font-size:0.78rem;color:var(--muted);margin-bottom:0.35rem;">Максимум инструментов (до 40)</div>
-        <input type="number" id="settingMaxInstruments" min="1" max="40" step="1" value="40"
+        <input type="number" id="settingMaxInstruments" min="1" max="200" step="1" value="40"
           style="width:100%;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:0.35rem 0.55rem;font-size:0.9rem;">
       </div>
     </div>
@@ -335,7 +335,7 @@
     // Настройки по умолчанию — могут быть переопределены пользователем через UI
     let AUTO_REFRESH_INTERVAL_AUCTION = 4000; // 4 секунды во время аукциона
     let AUTO_REFRESH_INTERVAL_NORMAL = 60 * 60 * 1000; // 60 минут обычно
-    let MAX_INSTRUMENTS_LIMIT = 40; // Жёсткий лимит инструментов в одном запросе
+    let MAX_INSTRUMENTS_LIMIT = 200; // Лимит инструментов (сервер поддерживает до 200)
 
     // ===== Пользовательские настройки (хранятся в localStorage, отдельно для каждого профиля) =====
     const STORAGE_USER_SETTINGS = 'widget_user_settings_' + CURRENT_PROFILE;
@@ -743,7 +743,7 @@
       userSettings = {
         auctionInterval: Math.max(1, Math.min(60, auctionSec)),
         normalInterval:  Math.max(1, Math.min(1440, normalMin)),
-        maxInstruments:  Math.max(1, Math.min(40, maxInstr)),
+        maxInstruments:  Math.max(1, Math.min(200, maxInstr)),
       };
       localStorage.setItem(STORAGE_USER_SETTINGS, JSON.stringify(userSettings));
 
