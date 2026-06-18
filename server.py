@@ -13,6 +13,7 @@ import logging
 import os
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from flask import Flask, jsonify, request, send_from_directory
 import requests
@@ -218,14 +219,37 @@ app = Flask(__name__, static_folder="static", static_url_path="")
 
 # ========== Фоновый поток обновления данных ==========
 
+def _update_one_instrument(instrument_id, token, base_url, is_auction, candle_last_update, now):
+    """Обновить стакан и (если нужно) свечи для одного инструмента.
+    Вызывается из пула потоков — каждый поток использует свой токен."""
+    headers = _get_headers(token)
+    try:
+        # Стакан — каждый цикл
+        orderbook_data = _fetch_orderbook_direct(instrument_id, base_url, headers, depth=50)
+        if orderbook_data and "error" not in orderbook_data:
+            if not is_auction or orderbook_data.get("auction_price") is not None:
+                _set_cached_orderbook(instrument_id, orderbook_data)
+
+        # Свечи — раз в CANDLE_UPDATE_INTERVAL секунд
+        last_candle_ts = candle_last_update.get(instrument_id, 0)
+        if now - last_candle_ts >= CANDLE_UPDATE_INTERVAL:
+            candle_data = _fetch_5min_candle_direct(instrument_id, base_url, headers)
+            if candle_data is not None:
+                _set_cached_candle(instrument_id, candle_data)
+            candle_last_update[instrument_id] = now
+
+    except Exception as e:
+        logger.warning("Background update error for %s: %s", instrument_id, e)
+
+
 def _background_update_loop():
     """Фоновый поток: обновляет данные по активным инструментам.
 
-    Поддерживает несколько токенов (TINKOFF_INVEST_TOKEN через запятую) —
-    каждый инструмент обслуживается своим токеном по круговой ротации.
+    Поддерживает несколько токенов (TINKOFF_INVEST_TOKEN через запятую).
+    Запросы выполняются ПАРАЛЛЕЛЬНО — по одному потоку на токен.
+    Это позволяет обновить 40 инструментов за ~1-2 сек вместо ~4 сек.
 
-    Стаканы — каждый цикл (2 сек при аукционе, 60 сек в обычное время).
-    Свечи — раз в CANDLE_UPDATE_INTERVAL секунд (не каждый цикл).
+    Стаканы — каждый цикл, свечи — раз в CANDLE_UPDATE_INTERVAL секунд.
     """
     global _background_running
     logger.info("Background update thread started")
@@ -236,7 +260,6 @@ def _background_update_loop():
         try:
             server_tokens = _get_server_tokens()
             if not server_tokens:
-                # Без серверных токенов фоновый поток простаивает
                 time.sleep(30)
                 continue
 
@@ -247,47 +270,32 @@ def _background_update_loop():
                 auction_info = _is_auction_time()
                 is_auction = auction_info.get("is_any_auction", False)
                 now = time.time()
+                n_workers = len(server_tokens)
 
-                logger.info("Background update: %d instruments, auction=%s, tokens=%d",
-                            len(active_ids), is_auction, len(server_tokens))
+                logger.info("Background update: %d instruments, auction=%s, workers=%d",
+                            len(active_ids), is_auction, n_workers)
 
-                for i, instrument_id in enumerate(active_ids):
-                    if not _background_running:
-                        break
-
-                    # Round-robin: каждый инструмент получает свой токен
-                    token = server_tokens[i % len(server_tokens)]
-                    headers = _get_headers(token)
-
-                    try:
-                        # Стакан — каждый цикл
-                        orderbook_data = _fetch_orderbook_direct(
-                            instrument_id, base_url, headers, depth=50
-                        )
-                        if orderbook_data and "error" not in orderbook_data:
-                            # Во время аукциона не кэшируем пустой стакан
-                            if not is_auction or orderbook_data.get("auction_price") is not None:
-                                _set_cached_orderbook(instrument_id, orderbook_data)
-
-                        # Свечи — только раз в CANDLE_UPDATE_INTERVAL секунд
-                        last_candle_ts = _candle_last_update.get(instrument_id, 0)
-                        if now - last_candle_ts >= CANDLE_UPDATE_INTERVAL:
-                            candle_data = _fetch_5min_candle_direct(
-                                instrument_id, base_url, headers
-                            )
-                            if candle_data is not None:
-                                _set_cached_candle(instrument_id, candle_data)
-                            _candle_last_update[instrument_id] = now
-
-                        # Пауза между запросами (уменьшена т.к. нагрузка распределяется по токенам)
-                        time.sleep(0.02)
-
-                    except Exception as e:
-                        logger.warning("Background update error for %s: %s",
-                                       instrument_id, e)
+                # Параллельный обход: каждый инструмент — в своём потоке,
+                # токен выбирается по round-robin (индекс инструмента % кол-во токенов)
+                with ThreadPoolExecutor(max_workers=n_workers) as executor:
+                    futures = {
+                        executor.submit(
+                            _update_one_instrument,
+                            instrument_id,
+                            server_tokens[i % n_workers],
+                            base_url,
+                            is_auction,
+                            _candle_last_update,
+                            now,
+                        ): instrument_id
+                        for i, instrument_id in enumerate(active_ids)
+                        if _background_running
+                    }
+                    for future in as_completed(futures):
+                        pass  # результаты уже записаны в кэш внутри функции
 
                 interval = BACKGROUND_INTERVAL_AUCTION if is_auction else BACKGROUND_INTERVAL_NORMAL
-                logger.debug("Next background update in %d seconds", interval)
+                logger.debug("Cycle done, sleeping %ds", interval)
 
                 for _ in range(int(interval * 10)):
                     if not _background_running:
