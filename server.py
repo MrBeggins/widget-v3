@@ -69,6 +69,11 @@ _stats_lock = threading.Lock()
 _notify_queue = []   # [{"id": str, "msg": str, "ts": float}]
 _notify_lock = threading.Lock()
 
+# ========== Лог аукциона (чёрный ящик) ==========
+MAX_AUCTION_LOG = 200          # макс. записей в памяти
+_auction_log   = []            # [{...}, ...]
+_auction_log_lock = threading.Lock()
+
 
 def _record_request(endpoint, session_id=None):
     """Записать запрос в статистику."""
@@ -1067,7 +1072,7 @@ def _calculate_auction_price(bids, asks, reference_price=None):
     """
     # ===== Граничные случаи =====
     if not bids and not asks:
-        return None, 0, 0, None
+        return None, 0, 0, None, []
     if bids and not asks:
         best_bid_price = _quotation_to_float(bids[0].get("price"))
         total_bid_lots = sum(int(b.get("quantity", 0)) for b in bids)
@@ -1076,6 +1081,7 @@ def _calculate_auction_price(bids, asks, reference_price=None):
             0,
             total_bid_lots,
             "bid",
+            [],
         )
     if asks and not bids:
         best_ask_price = _quotation_to_float(asks[0].get("price"))
@@ -1085,6 +1091,7 @@ def _calculate_auction_price(bids, asks, reference_price=None):
             0,
             total_ask_lots,
             "ask",
+            [],
         )
 
     # ===== Парсинг и группировка по уровням =====
@@ -1116,52 +1123,62 @@ def _calculate_auction_price(bids, asks, reference_price=None):
         cumulative_ask[price] = running
 
     # ===== На каждой цене считаем executed и raw imbalance =====
-    levels = []  # (price, cum_bid, cum_ask, executed, imbalance_signed)
+    levels = []
     for price in all_prices:
         cb = cumulative_bid.get(price, 0)
         ca = cumulative_ask.get(price, 0)
         executed = min(cb, ca)
         imb = cb - ca   # знак: + → bid, − → ask, 0 → баланс
-        levels.append((price, cb, ca, executed, imb))
+        levels.append({
+            "price": price,
+            "bid_qty": bid_by_price.get(price, 0),
+            "ask_qty": ask_by_price.get(price, 0),
+            "cum_bid": cb,
+            "cum_ask": ca,
+            "executed": executed,
+            "imbalance": imb,
+        })
 
-    max_executed = max(l[3] for l in levels)
+    max_executed = max(l["executed"] for l in levels)
     if max_executed == 0:
         # Стаканы не пересекаются вообще
-        return None, 0, 0, None
+        return None, 0, 0, None, levels
 
     # Шаг 1: равновесный диапазон
-    equilibrium = [l for l in levels if l[3] == max_executed]
+    equilibrium = [l for l in levels if l["executed"] == max_executed]
 
     # Шаг 2: минимальный |imbalance| в диапазоне
-    min_abs_imb = min(abs(l[4]) for l in equilibrium)
-    candidates = [l for l in equilibrium if abs(l[4]) == min_abs_imb]
+    min_abs_imb = min(abs(l["imbalance"]) for l in equilibrium)
+    candidates = [l for l in equilibrium if abs(l["imbalance"]) == min_abs_imb]
 
     # Шаг 3: выбор цены по направлению дисбаланса
     signs = set()
     for l in candidates:
-        if l[4] > 0:
+        if l["imbalance"] > 0:
             signs.add(1)
-        elif l[4] < 0:
+        elif l["imbalance"] < 0:
             signs.add(-1)
         else:
             signs.add(0)
 
     if signs == {1}:
         # Везде bid преобладает — берём максимальную цену
-        chosen = max(candidates, key=lambda l: l[0])
+        chosen = max(candidates, key=lambda l: l["price"])
     elif signs == {-1}:
         # Везде ask преобладает — берём минимальную цену
-        chosen = min(candidates, key=lambda l: l[0])
+        chosen = min(candidates, key=lambda l: l["price"])
     else:
         # Смешанный знак или нулевой дисбаланс → используем reference_price
         if reference_price and reference_price > 0:
-            chosen = min(candidates, key=lambda l: abs(l[0] - reference_price))
+            chosen = min(candidates, key=lambda l: abs(l["price"] - reference_price))
         else:
             # Без референса — середина диапазона (берём центральный кандидат)
-            sorted_c = sorted(candidates, key=lambda l: l[0])
+            sorted_c = sorted(candidates, key=lambda l: l["price"])
             chosen = sorted_c[len(sorted_c) // 2]
 
-    best_price, _cb, _ca, best_executed, raw_imb = chosen
+    best_price = chosen["price"]
+    best_executed = chosen["executed"]
+    raw_imb = chosen["imbalance"]
     best_imbalance = abs(raw_imb)
     if raw_imb > 0:
         best_direction = 'bid'
@@ -1175,7 +1192,59 @@ def _calculate_auction_price(bids, asks, reference_price=None):
         best_executed,
         best_imbalance,
         best_direction,
+        levels,
     )
+
+
+def _auction_log_add(instrument_id, raw_api_data, bids_parsed, asks_parsed,
+                     calc_price, executed, imbalance, direction, ref_price, levels):
+    """Записать снимок стакана в лог аукциона."""
+    now = time.time()
+    import datetime
+    ts_str = datetime.datetime.fromtimestamp(now).strftime("%H:%M:%S.%f")[:-3]
+
+    # Сырые поля из ответа API (без bids/asks — они отдельно)
+    api_meta = {k: v for k, v in raw_api_data.items() if k not in ("bids", "asks")}
+
+    # Конвертируем биды/аски в читаемый формат
+    def parse_side(raw_list):
+        out = []
+        for item in raw_list:
+            p = _quotation_to_float(item.get("price"))
+            q = int(item.get("quantity", 0))
+            if p is not None:
+                out.append({"p": round(p, 4), "q": q})
+        return out
+
+    entry = {
+        "ts": now,
+        "ts_str": ts_str,
+        "instrument_id": instrument_id,
+        "api_meta": api_meta,           # lastPrice, closePrice, limitUp, limitDown, etc.
+        "bids": parse_side(bids_parsed),
+        "asks": parse_side(asks_parsed),
+        "calc_price": round(calc_price, 4) if calc_price else None,
+        "executed": executed,
+        "imbalance": imbalance,
+        "direction": direction,
+        "ref_price": ref_price,
+        "levels": [                     # кумулятивные уровни
+            {
+                "price": round(l["price"], 4),
+                "bid_qty": l.get("bid_qty", 0),
+                "ask_qty": l.get("ask_qty", 0),
+                "cum_bid": l.get("cum_bid", 0),
+                "cum_ask": l.get("cum_ask", 0),
+                "executed": l.get("executed", 0),
+                "imbalance": l.get("imbalance", 0),
+            }
+            for l in (levels or [])
+        ],
+    }
+    with _auction_log_lock:
+        _auction_log.append(entry)
+        if len(_auction_log) > MAX_AUCTION_LOG:
+            del _auction_log[0]
 
 
 def _fetch_orderbook_direct(instrument_id, base_url, headers, depth=50):
@@ -1206,7 +1275,13 @@ def _fetch_orderbook_direct(instrument_id, base_url, headers, depth=50):
         last_price = _quotation_to_float(data.get("lastPrice"))
         close_price = _quotation_to_float(data.get("closePrice"))
         ref_for_auction = last_price or close_price or None
-        auction_price, executed_lots, imbalance, imbalance_direction = _calculate_auction_price(bids, asks, ref_for_auction)
+        auction_price, executed_lots, imbalance, imbalance_direction, levels = \
+            _calculate_auction_price(bids, asks, ref_for_auction)
+        # Логируем во время аукциона
+        if _is_auction_time().get("is_any_auction"):
+            _auction_log_add(instrument_id, data, bids, asks,
+                             auction_price, executed_lots, imbalance,
+                             imbalance_direction, ref_for_auction, levels)
         # Дневное закрытие: из дневных свечей API, иначе closePrice стакана
         daily_close_price = _fetch_daily_close(instrument_id, base_url, headers)
         if daily_close_price is None:
@@ -1297,7 +1372,13 @@ def _fetch_orderbook(instrument_id, base_url, headers, depth=50):
         last_price = _quotation_to_float(data.get("lastPrice"))
         close_price = _quotation_to_float(data.get("closePrice"))
         ref_for_auction = last_price or close_price or None
-        auction_price, executed_lots, imbalance, imbalance_direction = _calculate_auction_price(bids, asks, ref_for_auction)
+        auction_price, executed_lots, imbalance, imbalance_direction, levels = \
+            _calculate_auction_price(bids, asks, ref_for_auction)
+        # Логируем во время аукциона
+        if _is_auction_time().get("is_any_auction"):
+            _auction_log_add(instrument_id, data, bids, asks,
+                             auction_price, executed_lots, imbalance,
+                             imbalance_direction, ref_for_auction, levels)
         daily_close_price = _fetch_daily_close(instrument_id, base_url, headers)
         if daily_close_price is None:
             daily_close_price = close_price
@@ -1434,6 +1515,27 @@ def notify_poll():
         items = list(_notify_queue)
         _notify_queue.clear()
     return jsonify({"notifications": items})
+
+
+@app.route("/api/auction_log")
+def auction_log_get():
+    """Вернуть лог аукциона (последние MAX_AUCTION_LOG записей)."""
+    limit = min(int(request.args.get("limit", 200)), 200)
+    instrument_id = request.args.get("id")   # фильтр по инструменту
+    with _auction_log_lock:
+        entries = list(_auction_log)
+    if instrument_id:
+        entries = [e for e in entries if e.get("instrument_id") == instrument_id]
+    entries = entries[-limit:][::-1]  # свежие сначала
+    return jsonify({"count": len(entries), "entries": entries})
+
+
+@app.route("/api/auction_log/clear", methods=["POST", "GET"])
+def auction_log_clear():
+    """Очистить лог аукциона."""
+    with _auction_log_lock:
+        _auction_log.clear()
+    return jsonify({"ok": True, "msg": "Auction log cleared"})
 
 
 def main():

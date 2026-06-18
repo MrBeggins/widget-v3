@@ -209,6 +209,7 @@
     <button type="button" id="btnSlowPanel">🔄 Медленные</button>
     <button type="button" id="btnSettings">⚙️ Настройки</button>
     <button type="button" id="btnTestPanel">🧪 Тест</button>
+    <button type="button" id="btnAuctionLog">📋 Лог</button>
     <button type="button" id="btnAutoRefresh">Авто: ВКЛ</button>
     <button type="button" id="btnNewProfile">+ Профиль</button>
     <span class="auto-status active" id="autoStatus">обновление каждый час</span>
@@ -309,6 +310,17 @@
       </div>
     </div>
     <button type="button" onclick="saveUserSettings(this)">Сохранить настройки</button>
+  </div>
+
+  <!-- Auction log panel -->
+  <div id="auctionLogPanel" class="test-panel" style="display:none;">
+    <h2>📋 Лог аукциона — сырые данные API</h2>
+    <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-bottom:0.6rem;">
+      <button type="button" onclick="loadAuctionLog()" style="background:var(--accent);color:#000;font-weight:700;">↺ Обновить</button>
+      <button type="button" onclick="clearAuctionLog()" style="color:var(--negative);">Очистить лог</button>
+      <span id="auctionLogStatus" style="font-size:0.9rem;color:var(--muted);"></span>
+    </div>
+    <div id="auctionLogBody" style="font-size:0.88rem;"></div>
   </div>
 
   <!-- Test stakan panel -->
@@ -728,8 +740,8 @@
     }
 
     function closeAllPanels(){
-      ['fastPanel','slowPanel','settingsPanel','testPanel'].forEach(id=>{const p=document.getElementById(id);if(p)p.style.display='none';});
-      ['btnFastPanel','btnSlowPanel','btnSettings','btnTestPanel'].forEach(id=>{const b=document.getElementById(id);if(b)b.classList.remove('active');});
+      ['fastPanel','slowPanel','settingsPanel','testPanel','auctionLogPanel'].forEach(id=>{const p=document.getElementById(id);if(p)p.style.display='none';});
+      ['btnFastPanel','btnSlowPanel','btnSettings','btnTestPanel','btnAuctionLog'].forEach(id=>{const b=document.getElementById(id);if(b)b.classList.remove('active');});
     }
 
     function openPanel(pt){
@@ -940,6 +952,79 @@
       if(iv!==lastFastIv){lastFastIv=iv;stopFastAutoRefresh();startFastAutoRefresh();}
     },30000);
 
+    // ===== Auction Log =====
+    async function loadAuctionLog() {
+      const status = document.getElementById('auctionLogStatus');
+      const body = document.getElementById('auctionLogBody');
+      status.textContent = 'Загрузка…';
+      try {
+        const r = await fetch('/api/auction_log?limit=200');
+        const data = await r.json();
+        status.textContent = `Записей: ${data.count}` + (data.count === 0 ? ' (лог пуст — ждём аукциона)' : '');
+        if (!data.entries.length) { body.innerHTML = '<div style="color:var(--muted);padding:0.5rem;">Лог пуст. Данные появятся во время аукциона (06:48–07:02, 08:48–09:02, 18:38–18:52 МСК).</div>'; return; }
+
+        // Группируем по инструменту
+        const byId = {};
+        data.entries.forEach(e => { (byId[e.instrument_id] = byId[e.instrument_id]||[]).push(e); });
+
+        let html = '';
+        for (const [iid, entries] of Object.entries(byId)) {
+          const name = window._namesMap && window._namesMap[iid] ? window._namesMap[iid] : iid.slice(0,8)+'…';
+          html += `<details style="margin-bottom:0.5rem;" open>
+            <summary style="cursor:pointer;font-weight:700;color:var(--accent);padding:0.3rem 0;">
+              ${name} <span style="color:var(--muted);font-weight:normal;font-size:0.82rem;">(${entries.length} снимков)</span>
+            </summary>`;
+          entries.slice(0, 10).forEach((e, ei) => {
+            // API мета
+            const meta = e.api_meta || {};
+            const apiFields = Object.entries(meta).map(([k,v])=>`<b>${k}</b>: ${JSON.stringify(v)}`).join(' &nbsp; ');
+            // Биды/аски таблица
+            const makeTable = (rows, color) => {
+              if (!rows.length) return '<i style="color:var(--muted)">пусто</i>';
+              return `<table style="border-collapse:collapse;font-size:0.8rem;"><thead><tr>
+                <th style="color:var(--muted);padding:0.1rem 0.4rem;">Цена</th>
+                <th style="color:var(--muted);padding:0.1rem 0.4rem;">Лоты</th></tr></thead><tbody>`+
+                rows.map(r=>`<tr><td style="padding:0.1rem 0.4rem;color:${color}">${r.p}</td><td style="padding:0.1rem 0.4rem;">${r.q}</td></tr>`).join('')+
+                '</tbody></table>';
+            };
+            const calcColor = e.calc_price ? 'var(--accent)' : 'var(--negative)';
+            html += `<div style="background:var(--bg);border-radius:6px;padding:0.5rem 0.65rem;margin:0.3rem 0;border-left:3px solid ${calcColor}">
+              <div style="font-size:0.82rem;color:var(--muted);margin-bottom:0.25rem;">${e.ts_str} &nbsp;|&nbsp;
+                <b style="color:${calcColor}">Цена: ${e.calc_price ?? 'нет пересечения'}</b> &nbsp;|&nbsp;
+                Исп: ${e.executed} &nbsp;|&nbsp; Дисб: ${e.imbalance} (${e.direction||'—'}) &nbsp;|&nbsp;
+                Реф: ${e.ref_price ?? '—'}
+              </div>
+              <div style="font-size:0.78rem;color:var(--muted);margin-bottom:0.3rem;word-break:break-all;">${apiFields}</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;">
+                <div><div style="font-size:0.78rem;color:var(--accent);margin-bottom:0.15rem;">📈 Биды (${e.bids.length})</div>${makeTable(e.bids,'var(--accent)')}</div>
+                <div><div style="font-size:0.78rem;color:var(--negative);margin-bottom:0.15rem;">📉 Аски (${e.asks.length})</div>${makeTable(e.asks,'var(--negative)')}</div>
+              </div>
+            </div>`;
+          });
+          if (entries.length > 10) html += `<div style="color:var(--muted);font-size:0.82rem;padding:0.2rem;">… ещё ${entries.length-10} снимков</div>`;
+          html += '</details>';
+        }
+        body.innerHTML = html;
+      } catch(e) {
+        status.textContent = 'Ошибка: ' + e.message;
+      }
+    }
+    async function clearAuctionLog() {
+      await fetch('/api/auction_log/clear');
+      document.getElementById('auctionLogBody').innerHTML = '';
+      document.getElementById('auctionLogStatus').textContent = 'Лог очищен.';
+    }
+    function toggleAuctionLog() {
+      const panel = document.getElementById('auctionLogPanel');
+      const btn = document.getElementById('btnAuctionLog');
+      const isOpen = panel.style.display !== 'none';
+      closeAllPanels();
+      if (!isOpen) {
+        panel.style.display = 'block'; btn.classList.add('active');
+        loadAuctionLog();
+      }
+    }
+
     // ===== Test stakan =====
     function calcAuctionPrice(bids, asks, refPrice) {
       if (!bids.length && !asks.length) return {price:null,executed:0,imbalance:0,direction:null,levels:[]};
@@ -1091,6 +1176,7 @@
     document.getElementById('btnSlowPanel').addEventListener('click',toggleSlowPanel);
     document.getElementById('btnSettings').addEventListener('click',toggleSettings);
     document.getElementById('btnTestPanel').addEventListener('click',toggleTestPanel);
+    document.getElementById('btnAuctionLog').addEventListener('click',toggleAuctionLog);
     document.getElementById('btnAutoRefresh').addEventListener('click',toggleAutoRefresh);
     document.getElementById('btnNewProfile').addEventListener('click',createNewProfile);
 
