@@ -1150,6 +1150,7 @@
         document.getElementById('moverThresholdInput').value = getMoverThreshold();
         document.getElementById('moverAutoScan').checked = localStorage.getItem('mover_auto') === '1';
         _updateScanListCount();
+        loadMoverScanResult();           // показать последний авто-скан
         if (_lastMovers.length) renderMovers(_lastMovers);
       }
     }
@@ -1281,11 +1282,43 @@
       document.querySelectorAll('#scanSettingsList input[type=checkbox]').forEach(cb => { cb.checked = false; scanIds.delete(cb.value); });
       _updateScanListCount();
     }
-    function saveScanList(btn) {
+    async function saveScanList(btn) {
       try { localStorage.setItem(STORAGE_SCAN_IDS, JSON.stringify([...scanIds])); } catch(_) {}
       _updateScanListCount();
-      const orig = btn.textContent; btn.textContent = '✓ Сохранено'; btn.disabled = true;
+      const orig = btn.textContent; btn.textContent = '⏳ Сохраняю…'; btn.disabled = true;
+      // Синхронизируем список на сервер — фоновые потоки используют его
+      try {
+        await fetch('/api/scan_list', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ids: [...scanIds], threshold: getMoverThreshold()}),
+        });
+        btn.textContent = '✓ Сохранено';
+      } catch(e) {
+        btn.textContent = '⚠ Ошибка сети';
+      }
       setTimeout(() => { btn.textContent = orig; btn.disabled = false; }, 1500);
+    }
+
+    async function loadMoverScanResult() {
+      // Показываем результат последнего авто-скана в статус-строке панели
+      try {
+        const r = await fetch('/api/mover_scan_result');
+        const data = await r.json();
+        const status = document.getElementById('moversStatus');
+        if (data.result) {
+          const res = data.result;
+          const txt = res.count > 0
+            ? `🕐 Авто-скан ${res.ts_str}: проверено ${res.scanned}, найдено муверов ${res.count} (>${res.threshold}%)`
+            : `🕐 Авто-скан ${res.ts_str}: муверов нет`;
+          if (!status.textContent) status.textContent = txt;
+          if (res.count > 0 && !_lastMovers.length) {
+            _lastMovers = res.movers;
+            renderMovers(res.movers);
+            _updateMoverBadge(res.count);
+          }
+        }
+      } catch(_) {}
     }
 
     // Обработка категорий панели скана
@@ -1485,6 +1518,14 @@
         await loadFutures();
         updateAutoStatusText();
         const hf=fastIds.size>0, hs=slowIds.size>0;
+        // Синхронизируем scan_ids на сервер (фоновые потоки знают что сканировать)
+        if (scanIds.size > 0) {
+          fetch('/api/scan_list', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ids: [...scanIds], threshold: getMoverThreshold()}),
+          }).catch(() => {});
+        }
         // Инициализируем авто-скан муверов если был включён ранее
         if (localStorage.getItem('mover_auto') === '1') startMoverAutoScan();
 

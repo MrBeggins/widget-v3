@@ -69,6 +69,14 @@ _stats_lock = threading.Lock()
 _notify_queue = []   # [{"id": str, "msg": str, "ts": float}]
 _notify_lock = threading.Lock()
 
+# ========== Список скана муверов + авто-результат ==========
+_scan_list_ids   = []          # {instrument_uid: ...} — инструменты для фонового скана
+_scan_list_lock  = threading.Lock()
+_scan_threshold  = 3.0         # порог % для авто-скана (меняется через API)
+
+_mover_scan_result = None      # результат последнего авто-скана
+_mover_scan_result_lock = threading.Lock()
+
 # ========== Лог аукциона (чёрный ящик) ==========
 MAX_AUCTION_LOG     = 500      # макс. записей в памяти (весь журнал)
 MAX_AUCTION_RESULTS = 200      # макс. итоговых сравнений
@@ -439,6 +447,214 @@ def _background_slow_loop():
     logger.info("Slow background thread stopped")
 
 
+def _warmup_daily_closes():
+    """Прогрев кэша дневных закрытий для всего списка скана.
+
+    Вызывается за ~30 мин до аукциона (06:20, 08:20, 18:10 МСК).
+    Уже закэшированные инструменты пропускаются — TTL 6 ч.
+    """
+    with _scan_list_lock:
+        ids = list(_scan_list_ids)
+
+    if not ids:
+        instruments_cache = _cache_get("futures") or []
+        ids = [
+            i.get("instrument_uid") or i.get("figi", "")
+            for i in instruments_cache
+            if i.get("instrument_uid") or i.get("figi")
+        ]
+
+    if not ids:
+        return
+
+    server_tokens = _get_server_tokens()
+    if not server_tokens:
+        return
+    base_url = _get_api_url()
+    headers  = _get_headers(server_tokens[0])
+
+    missing = [uid for uid in ids if not _cache_get(f"candle_daily_{uid}")]
+    if not missing:
+        logger.info("Warmup: все %d дневных закрытий уже в кэше", len(ids))
+        return
+
+    logger.info("Warmup: запрашиваю %d дневных закрытий (5 потоков)…", len(missing))
+    t0 = time.time()
+
+    def _fetch_one(uid):
+        return uid, _fetch_daily_close(uid, base_url, headers)
+
+    fetched = 0
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        for uid, dc in pool.map(_fetch_one, missing):
+            if dc:
+                fetched += 1
+
+    logger.info("Warmup готов: загружено %d закрытий за %.1f сек", fetched, time.time() - t0)
+
+
+def _run_background_mover_scan():
+    """Авто-скан муверов: 1 батч GetLastPrices → сравнение с дневным закрытием.
+
+    Вызывается за ~6 мин до конца аукциона (06:54, 08:54, 18:44 МСК).
+    Найденные муверы добавляются в tracked (_server_cache["tracked"]),
+    чтобы медленный поток начал их отслеживать.
+    Результат сохраняется в _mover_scan_result и отправляется как уведомление.
+    """
+    global _mover_scan_result, _scan_threshold
+
+    with _scan_list_lock:
+        scan_ids = list(_scan_list_ids)
+    threshold = _scan_threshold
+
+    if not scan_ids:
+        instruments_cache = _cache_get("futures") or []
+        scan_ids = [
+            i.get("instrument_uid") or i.get("figi", "")
+            for i in instruments_cache
+            if i.get("instrument_uid") or i.get("figi")
+        ]
+
+    if not scan_ids:
+        logger.warning("Mover scan: список инструментов пуст")
+        return
+
+    server_tokens = _get_server_tokens()
+    if not server_tokens:
+        return
+    base_url = _get_api_url()
+    headers  = _get_headers(server_tokens[0])
+
+    # ── GetLastPrices — 1 батч-запрос ──
+    last_prices = {}
+    try:
+        url = f"{base_url}/tinkoff.public.invest.api.contract.v1.MarketDataService/GetLastPrices"
+        resp = requests.post(url, headers=headers,
+                             json={"instrumentId": scan_ids}, timeout=25, verify=False)
+        resp.raise_for_status()
+        for lp in resp.json().get("lastPrices", []):
+            uid   = lp.get("instrumentUid") or lp.get("figi", "")
+            price = _quotation_to_float(lp.get("price"))
+            if uid and price:
+                last_prices[uid] = price
+    except Exception as e:
+        logger.warning("Mover scan GetLastPrices failed: %s", e)
+        return
+
+    # ── Дневные закрытия из кэша ──
+    with _server_cache_lock:
+        ob_snap = {k: dict(v) for k, v in _server_cache["orderbook"].items()}
+
+    movers = []
+    instruments_cache = _cache_get("futures") or []
+    names = {i.get("instrument_uid", ""): i.get("name") or i.get("ticker") or ""
+             for i in instruments_cache}
+
+    for uid, last_price in last_prices.items():
+        daily_close = None
+        if uid in ob_snap:
+            d = ob_snap[uid].get("data", {})
+            daily_close = d.get("daily_close_price") or d.get("close_price")
+        if daily_close is None:
+            daily_close = _cache_get(f"candle_daily_{uid}")
+        if not daily_close or daily_close == 0:
+            continue
+
+        change = round((last_price - daily_close) / daily_close * 100, 2)
+        if abs(change) >= threshold:
+            movers.append({
+                "instrument_id": uid,
+                "name": names.get(uid, uid[:12]),
+                "last_price": round(last_price, 4),
+                "daily_close_price": round(daily_close, 4),
+                "change_pct": change,
+                "direction": "up" if change > 0 else "down",
+            })
+
+    movers.sort(key=lambda x: abs(x.get("change_pct") or 0), reverse=True)
+
+    now_str = datetime.now(timezone.utc).strftime("%H:%M UTC")
+    result = {
+        "ts": time.time(),
+        "ts_str": now_str,
+        "movers": movers,
+        "count": len(movers),
+        "scanned": len(last_prices),
+        "threshold": threshold,
+    }
+    with _mover_scan_result_lock:
+        _mover_scan_result = result
+
+    if movers:
+        # Добавляем найденных в tracked-список (медленный поток начнёт следить)
+        with _server_cache_lock:
+            for m in movers:
+                _server_cache["tracked"][m["instrument_id"]] = time.time()
+
+        # Браузерное уведомление
+        top3 = ", ".join(
+            f"{m['name']} {'+' if m['change_pct']>0 else ''}{m['change_pct']}%"
+            for m in movers[:3]
+        )
+        msg = f"🔥 Муверы ({len(movers)}): {top3}"
+        with _notify_lock:
+            _notify_queue.append({"id": f"mover_{time.time()}", "msg": msg, "ts": time.time()})
+
+    logger.info("Mover scan: проверено %d, муверов %d (порог %.1f%%): %s",
+                len(last_prices), len(movers), threshold,
+                [m["name"] for m in movers[:5]])
+
+
+def _background_scheduled_loop():
+    """Плановые задачи по московскому времени:
+
+      06:20, 08:20, 18:10 — прогрев кэша дневных закрытий
+      06:54, 08:54, 18:44 — авто-скан муверов (заявки в стакане перед открытием)
+
+    Цикл каждые 30 сек — точность ±30 сек, достаточно для данных задач.
+    Каждая задача запускается не чаще одного раза в сутки на данный (час, минута).
+    """
+    global _background_running
+    logger.info("Scheduled background thread started")
+
+    WARMUP_TIMES = {(6, 20), (8, 20), (18, 10)}
+    SCAN_TIMES   = {(6, 54), (8, 54), (18, 44)}
+
+    _done_warmup: set = set()  # "DD-H:MM" ключи уже выполненных задач
+    _done_scan:   set = set()
+
+    while _background_running:
+        try:
+            now_msk = datetime.now(timezone.utc) + timedelta(hours=3)
+            h, m    = now_msk.hour, now_msk.minute
+            day_key = now_msk.strftime("%d")
+
+            key = f"{day_key}-{h}:{m:02d}"
+
+            if (h, m) in WARMUP_TIMES and key not in _done_warmup:
+                _done_warmup.add(key)
+                logger.info("Scheduled: warmup daily closes at %02d:%02d MSK", h, m)
+                threading.Thread(target=_warmup_daily_closes, daemon=True,
+                                 name="warmup-daily").start()
+
+            if (h, m) in SCAN_TIMES and key not in _done_scan:
+                _done_scan.add(key)
+                logger.info("Scheduled: mover scan at %02d:%02d MSK", h, m)
+                threading.Thread(target=_run_background_mover_scan, daemon=True,
+                                 name="mover-scan").start()
+
+            # Раз в сутки чистим старые ключи (держим только сегодняшний день)
+            _done_warmup = {k for k in _done_warmup if k.startswith(day_key)}
+            _done_scan   = {k for k in _done_scan   if k.startswith(day_key)}
+
+        except Exception as e:
+            logger.exception("Scheduled loop error: %s", e)
+
+        time.sleep(30)
+
+    logger.info("Scheduled background thread stopped")
+
+
 def _get_server_tokens():
     """Получить список серверных токенов из TINKOFF_INVEST_TOKEN (через запятую).
     Поддерживает несколько токенов для ротации нагрузки на API."""
@@ -446,9 +662,11 @@ def _get_server_tokens():
     return [t.strip() for t in token_str.split(",") if t.strip()]
 
 
+_background_scheduled_thread = None
+
 def _start_background_thread():
-    """Запустить оба фоновых потока: быстрый (активные) + медленный (tracked)."""
-    global _background_fast_thread, _background_slow_thread, _background_running
+    """Запустить три фоновых потока: быстрый (активные) + медленный (tracked) + плановый."""
+    global _background_fast_thread, _background_slow_thread, _background_scheduled_thread, _background_running
 
     _background_running = True
 
@@ -461,6 +679,11 @@ def _start_background_thread():
         _background_slow_thread = threading.Thread(target=_background_slow_loop, daemon=True)
         _background_slow_thread.start()
         logger.info("Slow background thread started")
+
+    if _background_scheduled_thread is None or not _background_scheduled_thread.is_alive():
+        _background_scheduled_thread = threading.Thread(target=_background_scheduled_loop, daemon=True)
+        _background_scheduled_thread.start()
+        logger.info("Scheduled background thread started")
 
 
 def _stop_background_thread():
@@ -1806,6 +2029,37 @@ def api_movers():
         "fetched_closes": fetched_closes,   # сколько дневных закрытий было запрошено (0 после прогрева)
         "cached_closes": len(daily_closes) - fetched_closes,
     })
+
+
+@app.route("/api/scan_list", methods=["GET", "POST"])
+def api_scan_list():
+    """GET  — вернуть текущий список скана и порог.
+    POST — сохранить список (JSON: {ids: [...], threshold: 3.0}).
+    """
+    global _scan_list_ids, _scan_threshold
+    if request.method == "POST":
+        body = request.get_json(silent=True) or {}
+        ids  = [str(x) for x in body.get("ids", []) if x]
+        thr  = float(body.get("threshold", _scan_threshold))
+        with _scan_list_lock:
+            _scan_list_ids = ids
+        _scan_threshold = thr
+        logger.info("Scan list updated: %d ids, threshold=%.1f%%", len(ids), thr)
+        return jsonify({"ok": True, "count": len(ids), "threshold": thr})
+    else:
+        with _scan_list_lock:
+            ids = list(_scan_list_ids)
+        return jsonify({"ids": ids, "count": len(ids), "threshold": _scan_threshold})
+
+
+@app.route("/api/mover_scan_result")
+def api_mover_scan_result():
+    """Результат последнего авто-скана муверов."""
+    with _mover_scan_result_lock:
+        result = dict(_mover_scan_result) if _mover_scan_result else None
+    if result is None:
+        return jsonify({"result": None, "msg": "Авто-скан ещё не выполнялся сегодня."})
+    return jsonify({"result": result})
 
 
 def main():
