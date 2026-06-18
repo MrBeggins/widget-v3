@@ -27,10 +27,13 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # При нескольких токенах (TINKOFF_INVEST_TOKEN через запятую) суммарный лимит умножается.
 # При 3 токенах и 2 сек интервале: 30 req/s × 3 = 90 req/s → ~40 инструментов комфортно.
 # Свечи обновляются отдельно раз в 30 сек — не каждый цикл.
-MAX_CACHED_INSTRUMENTS = 200
-BACKGROUND_INTERVAL_AUCTION = 2      # 2 секунды во время аукциона
-BACKGROUND_INTERVAL_NORMAL = 60      # 60 секунд вне аукциона
+MAX_CACHED_INSTRUMENTS = 200          # лимит быстрых (активных) инструментов
+MAX_SLOW_INSTRUMENTS = 500            # лимит медленных (tracked) инструментов
+BACKGROUND_INTERVAL_AUCTION = 2      # 2 сек — быстрый поток во время аукциона
+BACKGROUND_INTERVAL_NORMAL = 10      # 10 сек — быстрый поток вне аукциона
+BACKGROUND_SLOW_INTERVAL = 60        # 60 сек — медленный поток всегда
 ACTIVE_INSTRUMENT_TTL = 300          # 5 минут - инструмент считается активным
+TRACKED_INSTRUMENT_TTL = 43200       # 12 часов - инструмент в медленном кэше
 CANDLE_UPDATE_INTERVAL = 30          # свечи обновляем раз в 30 сек
 
 # ========== Кэширование ==========
@@ -46,10 +49,12 @@ _cache_lock = threading.Lock()
 _server_cache = {
     "orderbook": {},      # {instrument_id: {data, updated_at}}
     "candles": {},        # {instrument_id: {data, updated_at}}
-    "active": {},         # {instrument_id: last_requested_at}
+    "active": {},         # {instrument_id: last_requested_at} — быстрые (≤5 мин)
+    "tracked": {},        # {instrument_id: last_requested_at} — медленные (≤12 ч)
 }
 _server_cache_lock = threading.Lock()
-_background_thread = None
+_background_fast_thread = None
+_background_slow_thread = None
 _background_running = False
 
 # ========== Статистика запросов ==========
@@ -121,10 +126,12 @@ def _cache_set(key, value, ttl_seconds):
 # ========== Серверный кэш: управление активными инструментами ==========
 
 def _mark_instrument_active(instrument_id):
-    """Отметить инструмент как активный (запрошен пользователем)."""
+    """Отметить инструмент как активный (запрошен пользователем).
+    Добавляет в оба списка: active (быстрый) и tracked (медленный)."""
     now = time.time()
     with _server_cache_lock:
         _server_cache["active"][instrument_id] = now
+        _server_cache["tracked"][instrument_id] = now
 
 
 def _get_active_instruments():
@@ -137,6 +144,24 @@ def _get_active_instruments():
         # Сортируем по времени последнего запроса (недавние первыми)
         sorted_ids = sorted(active.keys(), key=lambda x: active[x], reverse=True)
         return sorted_ids[:MAX_CACHED_INSTRUMENTS]
+
+
+def _get_tracked_instruments():
+    """Все инструменты для медленного обновления (запрошенные за последние 12 часов),
+    КРОМЕ тех, что сейчас активны — они обрабатываются быстрым потоком."""
+    now = time.time()
+    cutoff_tracked = now - TRACKED_INSTRUMENT_TTL
+    cutoff_active = now - ACTIVE_INSTRUMENT_TTL
+    with _server_cache_lock:
+        # Чистим устаревшие
+        tracked = {k: v for k, v in _server_cache["tracked"].items() if v > cutoff_tracked}
+        _server_cache["tracked"] = tracked
+        # Активные инструменты (обрабатывает быстрый поток)
+        active_set = {k for k, v in _server_cache["active"].items() if v > cutoff_active}
+        # Медленный поток берёт только то, что НЕ активно
+        slow = {k: v for k, v in tracked.items() if k not in active_set}
+        sorted_ids = sorted(slow.keys(), key=lambda x: slow[x], reverse=True)
+        return sorted_ids[:MAX_SLOW_INSTRUMENTS]
 
 
 def _get_cached_orderbook(instrument_id):
@@ -177,12 +202,19 @@ def _set_cached_candle(instrument_id, data):
 
 def _get_cache_stats():
     """Статистика серверного кэша."""
+    now = time.time()
+    cutoff_active = now - ACTIVE_INSTRUMENT_TTL
+    cutoff_tracked = now - TRACKED_INSTRUMENT_TTL
     with _server_cache_lock:
+        active_count = sum(1 for v in _server_cache["active"].values() if v > cutoff_active)
+        tracked_count = sum(1 for v in _server_cache["tracked"].values() if v > cutoff_tracked)
         return {
-            "active_instruments": len(_server_cache["active"]),
+            "active_instruments": active_count,
+            "tracked_instruments": tracked_count,
             "cached_orderbooks": len(_server_cache["orderbook"]),
             "cached_candles": len(_server_cache["candles"]),
             "max_instruments": MAX_CACHED_INSTRUMENTS,
+            "max_slow_instruments": MAX_SLOW_INSTRUMENTS,
         }
 
 
@@ -242,17 +274,15 @@ def _update_one_instrument(instrument_id, token, base_url, is_auction, candle_la
         logger.warning("Background update error for %s: %s", instrument_id, e)
 
 
-def _background_update_loop():
-    """Фоновый поток: обновляет данные по активным инструментам.
+def _background_fast_loop():
+    """Быстрый фоновый поток: обновляет активные инструменты (TTL ≤5 мин).
 
-    Поддерживает несколько токенов (TINKOFF_INVEST_TOKEN через запятую).
-    Запросы выполняются ПАРАЛЛЕЛЬНО — по одному потоку на токен.
-    Это позволяет обновить 40 инструментов за ~1-2 сек вместо ~4 сек.
-
-    Стаканы — каждый цикл, свечи — раз в CANDLE_UPDATE_INTERVAL секунд.
+    Интервал: 2 сек (аукцион) / 10 сек (обычное время).
+    Параллельные запросы через ThreadPoolExecutor — по одному потоку на токен.
+    Цель: данные не старее 4 сек во время аукциона для 40 активных инструментов.
     """
     global _background_running
-    logger.info("Background update thread started")
+    logger.info("Fast background thread started")
 
     _candle_last_update = {}  # {instrument_id: timestamp последнего обновления свечи}
 
@@ -272,11 +302,9 @@ def _background_update_loop():
                 now = time.time()
                 n_workers = len(server_tokens)
 
-                logger.info("Background update: %d instruments, auction=%s, workers=%d",
+                logger.info("Fast loop: %d instruments, auction=%s, workers=%d",
                             len(active_ids), is_auction, n_workers)
 
-                # Параллельный обход: каждый инструмент — в своём потоке,
-                # токен выбирается по round-robin (индекс инструмента % кол-во токенов)
                 with ThreadPoolExecutor(max_workers=n_workers) as executor:
                     futures = {
                         executor.submit(
@@ -292,10 +320,10 @@ def _background_update_loop():
                         if _background_running
                     }
                     for future in as_completed(futures):
-                        pass  # результаты уже записаны в кэш внутри функции
+                        pass
 
                 interval = BACKGROUND_INTERVAL_AUCTION if is_auction else BACKGROUND_INTERVAL_NORMAL
-                logger.debug("Cycle done, sleeping %ds", interval)
+                logger.debug("Fast loop done, sleeping %ds", interval)
 
                 for _ in range(int(interval * 10)):
                     if not _background_running:
@@ -305,10 +333,73 @@ def _background_update_loop():
                 time.sleep(5)
 
         except Exception as e:
-            logger.exception("Background update loop error: %s", e)
+            logger.exception("Fast background loop error: %s", e)
             time.sleep(5)
 
-    logger.info("Background update thread stopped")
+    logger.info("Fast background thread stopped")
+
+
+def _background_slow_loop():
+    """Медленный фоновый поток: обновляет tracked-инструменты (TTL ≤12 ч).
+
+    Интервал: 60 сек всегда.
+    Берёт только инструменты, которые НЕ в активном списке — они в быстром потоке.
+    Цель: держать данные актуальными для ~160 инструментов, открытых за день.
+    """
+    global _background_running
+    logger.info("Slow background thread started")
+
+    _candle_last_update = {}
+
+    while _background_running:
+        try:
+            server_tokens = _get_server_tokens()
+            if not server_tokens:
+                time.sleep(30)
+                continue
+
+            tracked_ids = _get_tracked_instruments()
+
+            if tracked_ids:
+                base_url = _get_api_url()
+                auction_info = _is_auction_time()
+                is_auction = auction_info.get("is_any_auction", False)
+                now = time.time()
+                n_workers = len(server_tokens)
+
+                logger.info("Slow loop: %d instruments, auction=%s, workers=%d",
+                            len(tracked_ids), is_auction, n_workers)
+
+                with ThreadPoolExecutor(max_workers=n_workers) as executor:
+                    futures = {
+                        executor.submit(
+                            _update_one_instrument,
+                            instrument_id,
+                            server_tokens[i % n_workers],
+                            base_url,
+                            is_auction,
+                            _candle_last_update,
+                            now,
+                        ): instrument_id
+                        for i, instrument_id in enumerate(tracked_ids)
+                        if _background_running
+                    }
+                    for future in as_completed(futures):
+                        pass
+
+                logger.debug("Slow loop done, sleeping %ds", BACKGROUND_SLOW_INTERVAL)
+
+            # Пауза — и когда есть инструменты, и когда нет
+            for _ in range(int(BACKGROUND_SLOW_INTERVAL * 10)):
+                if not _background_running:
+                    break
+                time.sleep(0.1)
+
+        except Exception as e:
+            logger.exception("Slow background loop error: %s", e)
+            time.sleep(10)
+
+    logger.info("Slow background thread stopped")
 
 
 def _get_server_tokens():
@@ -319,23 +410,27 @@ def _get_server_tokens():
 
 
 def _start_background_thread():
-    """Запустить фоновый поток обновления."""
-    global _background_thread, _background_running
-    
-    if _background_thread is not None and _background_thread.is_alive():
-        return
-    
+    """Запустить оба фоновых потока: быстрый (активные) + медленный (tracked)."""
+    global _background_fast_thread, _background_slow_thread, _background_running
+
     _background_running = True
-    _background_thread = threading.Thread(target=_background_update_loop, daemon=True)
-    _background_thread.start()
-    logger.info("Background thread started")
+
+    if _background_fast_thread is None or not _background_fast_thread.is_alive():
+        _background_fast_thread = threading.Thread(target=_background_fast_loop, daemon=True)
+        _background_fast_thread.start()
+        logger.info("Fast background thread started")
+
+    if _background_slow_thread is None or not _background_slow_thread.is_alive():
+        _background_slow_thread = threading.Thread(target=_background_slow_loop, daemon=True)
+        _background_slow_thread.start()
+        logger.info("Slow background thread started")
 
 
 def _stop_background_thread():
-    """Остановить фоновый поток."""
+    """Остановить оба фоновых потока."""
     global _background_running
     _background_running = False
-    logger.info("Background thread stop requested")
+    logger.info("Background threads stop requested")
 
 # T-Invest API REST endpoints
 API_URL_PROD = "https://invest-public-api.tbank.ru/rest"
@@ -555,12 +650,16 @@ def api_stats():
     stats = _get_stats()
     cache_stats = _get_cache_stats()
     
-    # Информация о фоновом потоке
+    # Информация о фоновых потоках
     background_info = {
         "running": _background_running,
-        "interval_auction": BACKGROUND_INTERVAL_AUCTION,
-        "interval_normal": BACKGROUND_INTERVAL_NORMAL,
-        "max_instruments": MAX_CACHED_INSTRUMENTS,
+        "fast_thread_alive": _background_fast_thread is not None and _background_fast_thread.is_alive(),
+        "slow_thread_alive": _background_slow_thread is not None and _background_slow_thread.is_alive(),
+        "fast_interval_auction": BACKGROUND_INTERVAL_AUCTION,
+        "fast_interval_normal": BACKGROUND_INTERVAL_NORMAL,
+        "slow_interval": BACKGROUND_SLOW_INTERVAL,
+        "max_active_instruments": MAX_CACHED_INSTRUMENTS,
+        "max_tracked_instruments": MAX_SLOW_INSTRUMENTS,
     }
     
     return jsonify({
