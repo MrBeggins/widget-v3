@@ -617,8 +617,8 @@ def _background_scheduled_loop():
     global _background_running
     logger.info("Scheduled background thread started")
 
-    WARMUP_TIMES = {(6, 20), (8, 20), (18, 10)}
-    SCAN_TIMES   = {(6, 54), (8, 54), (18, 44)}
+    WARMUP_TIMES = {(8, 20)}   # прогрев кэша за 30 мин до аукциона (08:50)
+    SCAN_TIMES   = {(8, 54)}   # скан муверов — заявки в стакане
 
     _done_warmup: set = set()  # "DD-H:MM" ключи уже выполненных задач
     _done_scan:   set = set()
