@@ -100,6 +100,9 @@
     .pct-positive { color: var(--accent); }
     .pct-negative { color: var(--negative); }
     .pct-null { color: var(--muted); }
+    /* Мувер — отклонение > threshold от дневного закрытия */
+    tr.mover-row { background: rgba(255,200,0,0.07) !important; }
+    tr.mover-row td:first-child::after { content: ' 🔥'; font-size: 0.8em; }
     /* Settings panels */
     .settings-panel {
       background: var(--card);
@@ -210,6 +213,7 @@
     <button type="button" id="btnSettings">⚙️ Настройки</button>
     <button type="button" id="btnTestPanel">🧪 Тест</button>
     <button type="button" id="btnAuctionLog">📋 Лог</button>
+    <button type="button" id="btnMovers">🔥 Мувы <span id="moversBadge" style="display:none;background:var(--negative);color:#fff;border-radius:10px;padding:0 0.35em;font-size:0.8em;margin-left:0.2em;"></span></button>
     <button type="button" id="btnAutoRefresh">Авто: ВКЛ</button>
     <button type="button" id="btnNewProfile">+ Профиль</button>
     <span class="auto-status active" id="autoStatus">обновление каждый час</span>
@@ -231,6 +235,26 @@
       <thead><tr><th>Акция</th><th>% акции</th><th>Фьючерс</th><th>% фьюча</th><th>Расхождение</th></tr></thead>
       <tbody id="divergenceBody"></tbody>
     </table>
+  </div>
+
+  <!-- Movers panel -->
+  <div id="moversPanel" class="settings-panel" style="display:none;max-height:none;">
+    <h2>🔥 Мувы — отклонение от дневного закрытия</h2>
+    <div style="display:flex;gap:0.55rem;align-items:center;flex-wrap:wrap;margin-bottom:0.6rem;">
+      <label style="font-size:1rem;gap:0.3rem;">
+        Порог:
+        <input type="number" id="moverThresholdInput" value="3" min="0.5" max="30" step="0.5"
+               style="width:4.5rem;padding:0.28rem 0.4rem;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--text);font-size:1rem;" onchange="saveMoverThreshold()">%
+      </label>
+      <button type="button" onclick="scanMovers(false)" style="background:var(--accent);color:#000;font-weight:700;">⚡ Быстро (из кэша)</button>
+      <button type="button" onclick="scanMovers(true)" title="Один GetLastPrices батч по всем фьючам — занимает 1–2 сек">🌐 Полный скан</button>
+      <button type="button" id="btnAddMoversToSlow" onclick="addMoversToSlow()" style="display:none;">➕ Добавить все в медленные</button>
+      <label style="font-size:0.95rem;gap:0.3rem;color:var(--muted);">
+        <input type="checkbox" id="moverAutoScan" onchange="toggleMoverAutoScan()"> Авто каждые 5 мин
+      </label>
+    </div>
+    <div id="moversStatus" style="font-size:0.9rem;color:var(--muted);margin-bottom:0.4rem;"></div>
+    <div id="moversBody"></div>
   </div>
 
   <!-- Fast instruments panel -->
@@ -743,8 +767,8 @@
     }
 
     function closeAllPanels(){
-      ['fastPanel','slowPanel','settingsPanel','testPanel','auctionLogPanel'].forEach(id=>{const p=document.getElementById(id);if(p)p.style.display='none';});
-      ['btnFastPanel','btnSlowPanel','btnSettings','btnTestPanel','btnAuctionLog'].forEach(id=>{const b=document.getElementById(id);if(b)b.classList.remove('active');});
+      ['fastPanel','slowPanel','settingsPanel','testPanel','auctionLogPanel','moversPanel'].forEach(id=>{const p=document.getElementById(id);if(p)p.style.display='none';});
+      ['btnFastPanel','btnSlowPanel','btnSettings','btnTestPanel','btnAuctionLog','btnMovers'].forEach(id=>{const b=document.getElementById(id);if(b)b.classList.remove('active');});
     }
 
     function openPanel(pt){
@@ -814,7 +838,8 @@
       let imb='—', ic='pct-null';
       if(row.imbalance!=null&&row.imbalance!==0){imb=String(row.imbalance);ic=row.imbalance_direction==='bid'?'pct-positive':row.imbalance_direction==='ask'?'pct-negative':'pct-null';}
       else if(row.imbalance===0) imb='0';
-      return '<tr><td>'+escapeHtml(name)+'</td><td class="num">'+cp+'</td><td class="num">'+dc+'</td><td class="num">'+ap+'</td><td class="num '+dc_cls+'">'+dp+(dev!=null?'%':'')+'</td><td class="num">'+el+'</td><td class="num '+ic+'">'+imb+'</td></tr>';
+      const isMover = dev != null && Math.abs(dev) >= getMoverThreshold();
+      return '<tr'+(isMover?' class="mover-row"':'')+'><td>'+escapeHtml(name)+'</td><td class="num">'+cp+'</td><td class="num">'+dc+'</td><td class="num">'+ap+'</td><td class="num '+dc_cls+'">'+dp+(dev!=null?'%':'')+'</td><td class="num">'+el+'</td><td class="num '+ic+'">'+imb+'</td></tr>';
     }
     function doSort(rows, col, dir){
       return [...rows].sort((a,b)=>{
@@ -1079,6 +1104,114 @@
       }
     }
 
+    // ===== Movers =====
+    let _moverAutoTimer = null;
+    let _lastMovers = [];
+
+    function getMoverThreshold() {
+      return parseFloat(localStorage.getItem('mover_threshold') || '3');
+    }
+    function saveMoverThreshold() {
+      const v = parseFloat(document.getElementById('moverThresholdInput').value) || 3;
+      localStorage.setItem('mover_threshold', String(v));
+      renderFastTable(); renderSlowTable();  // обновить подсветку
+    }
+    function toggleMoversPanel() {
+      const panel = document.getElementById('moversPanel');
+      const btn = document.getElementById('btnMovers');
+      const isOpen = panel.style.display !== 'none';
+      closeAllPanels();
+      if (!isOpen) {
+        panel.style.display = 'block'; btn.classList.add('active');
+        document.getElementById('moverThresholdInput').value = getMoverThreshold();
+        const autoOn = localStorage.getItem('mover_auto') === '1';
+        document.getElementById('moverAutoScan').checked = autoOn;
+        if (_lastMovers.length) renderMovers(_lastMovers);
+      }
+    }
+    async function scanMovers(scanAll) {
+      const threshold = getMoverThreshold();
+      const status = document.getElementById('moversStatus');
+      const body = document.getElementById('moversBody');
+      status.textContent = scanAll ? '⏳ Полный скан через GetLastPrices…' : '⏳ Читаю из кэша…';
+      body.innerHTML = '';
+      try {
+        const r = await fetch(`/api/movers?threshold=${threshold}&scan_all=${scanAll?1:0}`);
+        const data = await r.json();
+        if (data.error) { status.textContent = '❌ ' + data.error; return; }
+        _lastMovers = data.movers || [];
+        status.textContent = `Найдено муверов: ${data.count} / проверено: ${data.scanned} инструментов`;
+        renderMovers(_lastMovers);
+        // Обновить бейдж на кнопке
+        const badge = document.getElementById('moversBadge');
+        if (_lastMovers.length) { badge.textContent = _lastMovers.length; badge.style.display = ''; }
+        else badge.style.display = 'none';
+        // Обновить подсветку в таблицах
+        renderFastTable(); renderSlowTable();
+      } catch(e) { status.textContent = '❌ ' + e.message; }
+    }
+    function renderMovers(movers) {
+      const body = document.getElementById('moversBody');
+      const addBtn = document.getElementById('btnAddMoversToSlow');
+      if (!movers.length) {
+        body.innerHTML = '<div style="color:var(--muted);padding:0.5rem 0;">Муверов нет — все инструменты в пределах порога.</div>';
+        if (addBtn) addBtn.style.display = 'none';
+        return;
+      }
+      if (addBtn) addBtn.style.display = '';
+      let html = '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:0.95rem;">';
+      html += '<thead><tr style="background:#252830;"><th style="padding:0.3rem 0.5rem;text-align:left;color:var(--muted);">Инструмент</th>';
+      html += '<th style="padding:0.3rem 0.5rem;text-align:right;color:var(--muted);">Цена</th>';
+      html += '<th style="padding:0.3rem 0.5rem;text-align:right;color:var(--muted);">Закрытие</th>';
+      html += '<th style="padding:0.3rem 0.5rem;text-align:right;">Изм. %</th>';
+      html += '<th style="padding:0.3rem 0.5rem;text-align:center;color:var(--muted);">В медл.</th></tr></thead><tbody>';
+      movers.forEach((m, i) => {
+        const ch = m.change_pct;
+        const chColor = ch > 0 ? 'var(--accent)' : 'var(--negative)';
+        const chStr = (ch > 0 ? '+' : '') + ch + '%';
+        const inSlow = slowIds.has(m.instrument_id);
+        html += `<tr style="background:${i%2?'#1e2128':'#252830'};">
+          <td style="padding:0.28rem 0.5rem;font-weight:600;">${escapeHtml(m.name||m.instrument_id.slice(0,14))}</td>
+          <td style="padding:0.28rem 0.5rem;text-align:right;">${m.last_price??'—'}</td>
+          <td style="padding:0.28rem 0.5rem;text-align:right;color:var(--muted);">${m.daily_close_price??'—'}</td>
+          <td style="padding:0.28rem 0.5rem;text-align:right;font-weight:700;color:${chColor};">${chStr}</td>
+          <td style="padding:0.28rem 0.5rem;text-align:center;">
+            ${inSlow ? '<span style="color:var(--accent);">✓</span>' :
+              `<button type="button" onclick="addOneMoverToSlow('${m.instrument_id}')" style="padding:0.1rem 0.4rem;font-size:0.82rem;">+</button>`}
+          </td>
+        </tr>`;
+      });
+      html += '</tbody></table></div>';
+      body.innerHTML = html;
+    }
+    function addMoversToSlow() {
+      if (!_lastMovers.length) return;
+      let added = 0;
+      _lastMovers.forEach(m => { if (!slowIds.has(m.instrument_id)) { slowIds.add(m.instrument_id); added++; } });
+      try { localStorage.setItem(STORAGE_SLOW_IDS, JSON.stringify([...slowIds])); } catch(_) {}
+      document.getElementById('moversStatus').textContent += `  ✓ Добавлено в медленные: ${added}`;
+      renderMovers(_lastMovers);
+      if (autoRefreshEnabled) { stopSlowAutoRefresh(); startSlowAutoRefresh(); } else loadSlowData();
+    }
+    function addOneMoverToSlow(id) {
+      slowIds.add(id);
+      try { localStorage.setItem(STORAGE_SLOW_IDS, JSON.stringify([...slowIds])); } catch(_) {}
+      if (autoRefreshEnabled) { stopSlowAutoRefresh(); startSlowAutoRefresh(); } else loadSlowData();
+      renderMovers(_lastMovers);
+    }
+    function toggleMoverAutoScan() {
+      const on = document.getElementById('moverAutoScan').checked;
+      localStorage.setItem('mover_auto', on ? '1' : '0');
+      if (on) startMoverAutoScan(); else stopMoverAutoScan();
+    }
+    function startMoverAutoScan() {
+      stopMoverAutoScan();
+      _moverAutoTimer = setInterval(() => scanMovers(false), 5 * 60 * 1000);
+    }
+    function stopMoverAutoScan() {
+      if (_moverAutoTimer) { clearInterval(_moverAutoTimer); _moverAutoTimer = null; }
+    }
+
     // ===== Test stakan =====
     function calcAuctionPrice(bids, asks, refPrice) {
       if (!bids.length && !asks.length) return {price:null,executed:0,imbalance:0,direction:null,levels:[]};
@@ -1231,6 +1364,7 @@
     document.getElementById('btnSettings').addEventListener('click',toggleSettings);
     document.getElementById('btnTestPanel').addEventListener('click',toggleTestPanel);
     document.getElementById('btnAuctionLog').addEventListener('click',toggleAuctionLog);
+    document.getElementById('btnMovers').addEventListener('click',toggleMoversPanel);
     document.getElementById('btnAutoRefresh').addEventListener('click',toggleAutoRefresh);
     document.getElementById('btnNewProfile').addEventListener('click',createNewProfile);
 
@@ -1266,6 +1400,9 @@
         await loadFutures();
         updateAutoStatusText();
         const hf=fastIds.size>0, hs=slowIds.size>0;
+        // Инициализируем авто-скан муверов если был включён ранее
+        if (localStorage.getItem('mover_auto') === '1') startMoverAutoScan();
+
         if(hf||hs){
           if(hf){await loadFastData();startFastAutoRefresh();}else renderFastTable();
           if(hs){await loadSlowData();startSlowAutoRefresh();}else renderSlowTable();

@@ -1684,6 +1684,125 @@ def auction_results_get():
     return jsonify({"count": len(results), "results": results})
 
 
+@app.route("/api/movers")
+def api_movers():
+    """
+    Инструменты с отклонением от дневного закрытия ≥ threshold%.
+
+    Query params:
+        threshold  — порог в % (default 3.0)
+        scan_all   — "1" → сканировать все фьючи через один батч GetLastPrices
+                     "0" (default) → только уже закэшированные инструменты
+
+    При scan_all=0 ответ мгновенный (читается из памяти).
+    При scan_all=1 делается один батч-запрос GetLastPrices для всех фьючей,
+    дневное закрытие берётся из orderbook-кэша или candle_daily_кэша.
+    """
+    threshold = float(request.args.get("threshold", 3.0))
+    scan_all = request.args.get("scan_all", "0") in ("1", "true", "yes")
+
+    movers = []
+
+    if scan_all:
+        # ── Полное сканирование: один батч GetLastPrices ──
+        instruments_cache = _cache_get("futures")
+        if not instruments_cache:
+            return jsonify({"error": "futures not loaded, open widget first",
+                            "movers": [], "count": 0, "scanned": 0})
+
+        token = _get_token_from_request()
+        if not token:
+            return jsonify({"error": "no API token", "movers": [], "count": 0, "scanned": 0})
+        base_url = _get_api_url()
+        headers = _get_headers(token)
+
+        all_ids = [
+            i.get("instrument_uid") or i.get("figi", "")
+            for i in instruments_cache
+            if i.get("instrument_uid") or i.get("figi")
+        ]
+
+        # Один батч-запрос последних цен для всех инструментов
+        last_prices = {}
+        try:
+            url = f"{base_url}/tinkoff.public.invest.api.contract.v1.MarketDataService/GetLastPrices"
+            resp = requests.post(url, headers=headers,
+                                 json={"instrumentId": all_ids}, timeout=25, verify=False)
+            resp.raise_for_status()
+            for lp in resp.json().get("lastPrices", []):
+                uid = lp.get("instrumentUid") or lp.get("figi", "")
+                price = _quotation_to_float(lp.get("price"))
+                if uid and price:
+                    last_prices[uid] = price
+        except Exception as e:
+            logger.warning("api_movers scan_all GetLastPrices: %s", e)
+            return jsonify({"error": str(e), "movers": [], "count": 0, "scanned": 0})
+
+        names = {
+            i.get("instrument_uid", ""): i.get("name") or i.get("ticker") or ""
+            for i in instruments_cache
+        }
+
+        with _server_cache_lock:
+            ob_snap = {k: dict(v) for k, v in _server_cache["orderbook"].items()}
+
+        for uid, last_price in last_prices.items():
+            # Дневное закрытие: orderbook-кэш > candle_daily-кэш
+            daily_close = None
+            if uid in ob_snap:
+                d = ob_snap[uid].get("data", {})
+                daily_close = d.get("daily_close_price") or d.get("close_price")
+            if daily_close is None:
+                daily_close = _cache_get(f"candle_daily_{uid}")
+
+            if daily_close and daily_close != 0:
+                change = round((last_price - daily_close) / daily_close * 100, 2)
+                if abs(change) >= threshold:
+                    movers.append({
+                        "instrument_id": uid,
+                        "name": names.get(uid, uid[:12]),
+                        "last_price": round(last_price, 4),
+                        "daily_close_price": round(daily_close, 4),
+                        "change_pct": change,
+                        "direction": "up" if change > 0 else "down",
+                        "age_sec": 0,
+                    })
+
+        scanned = len(last_prices)
+
+    else:
+        # ── Быстрое сканирование: только закэшированные инструменты ──
+        with _server_cache_lock:
+            ob_snap = {k: dict(v) for k, v in _server_cache["orderbook"].items()}
+
+        for iid, entry in ob_snap.items():
+            data = entry.get("data", {})
+            change = data.get("change_pct")
+            if change is None:
+                change = data.get("deviation_pct")
+            if change is not None and abs(change) >= threshold:
+                movers.append({
+                    "instrument_id": iid,
+                    "name": data.get("name", iid[:12]),
+                    "last_price": data.get("last_price"),
+                    "daily_close_price": data.get("daily_close_price") or data.get("close_price"),
+                    "change_pct": round(float(change), 2),
+                    "direction": "up" if change > 0 else "down",
+                    "age_sec": round(time.time() - entry.get("updated_at", time.time())),
+                })
+
+        scanned = len(ob_snap)
+
+    movers.sort(key=lambda x: abs(x.get("change_pct") or 0), reverse=True)
+    return jsonify({
+        "movers": movers,
+        "count": len(movers),
+        "threshold": threshold,
+        "scanned": scanned,
+        "scan_all": scan_all,
+    })
+
+
 def main():
     port = int(os.environ.get("PORT", "5003"))
     sandbox = "sandbox" if os.environ.get("SANDBOX", "1").strip() in ("1", "true", "yes") else "prod"
