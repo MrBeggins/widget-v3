@@ -438,14 +438,13 @@
               <th data-table="fast" data-sort="name">Актив <span class="sort-icon"></span></th>
               <th class="num" data-table="fast" data-sort="close">Цена 5м <span class="sort-icon"></span></th>
               <th class="num" data-table="fast" data-sort="daily_close">Цена д <span class="sort-icon"></span></th>
-              <th class="num" data-table="fast" data-sort="auction">Цена аукц. <span class="sort-icon"></span></th>
               <th class="num" data-table="fast" data-sort="deviation">Откл. % <span class="sort-icon"></span></th>
               <th class="num" data-table="fast" data-sort="lots">Лоты <span class="sort-icon"></span></th>
-              <th class="num" data-table="fast" data-sort="imbalance">Дисбаланс <span class="sort-icon"></span></th>
+              <th class="num" data-table="fast" data-sort="auction">Цена свед. <span class="sort-icon"></span></th>
             </tr>
           </thead>
           <tbody id="fastTableBody">
-            <tr><td colspan="7" style="color:var(--muted);">Нажмите «⚡ Быстрые» и выберите инструменты</td></tr>
+            <tr><td colspan="6" style="color:var(--muted);">Нажмите «⚡ Быстрые» и выберите инструменты</td></tr>
           </tbody>
         </table>
       </div>
@@ -462,14 +461,13 @@
               <th data-table="slow" data-sort="name">Актив <span class="sort-icon"></span></th>
               <th class="num" data-table="slow" data-sort="close">Цена 5м <span class="sort-icon"></span></th>
               <th class="num" data-table="slow" data-sort="daily_close">Цена д <span class="sort-icon"></span></th>
-              <th class="num" data-table="slow" data-sort="auction">Цена аукц. <span class="sort-icon"></span></th>
               <th class="num" data-table="slow" data-sort="deviation">Откл. % <span class="sort-icon"></span></th>
               <th class="num" data-table="slow" data-sort="lots">Лоты <span class="sort-icon"></span></th>
-              <th class="num" data-table="slow" data-sort="imbalance">Дисбаланс <span class="sort-icon"></span></th>
+              <th class="num" data-table="slow" data-sort="auction">Цена свед. <span class="sort-icon"></span></th>
             </tr>
           </thead>
           <tbody id="slowTableBody">
-            <tr><td colspan="7" style="color:var(--muted);">Нажмите «🔄 Медленные» и выберите инструменты</td></tr>
+            <tr><td colspan="6" style="color:var(--muted);">Нажмите «🔄 Медленные» и выберите инструменты</td></tr>
           </tbody>
         </table>
       </div>
@@ -918,11 +916,8 @@
       const dp=dev!=null?(dev>0?'+'+dev:String(dev)):'—';
       const dc_cls=dev>0?'pct-positive':dev<0?'pct-negative':'pct-null';
       const el=row.executed_lots!=null?row.executed_lots:(row.total_lots!=null?row.total_lots:'—');
-      let imb='—', ic='pct-null';
-      if(row.imbalance!=null&&row.imbalance!==0){imb=String(row.imbalance);ic=row.imbalance_direction==='bid'?'pct-positive':row.imbalance_direction==='ask'?'pct-negative':'pct-null';}
-      else if(row.imbalance===0) imb='0';
       const isMover = dev != null && Math.abs(dev) >= getMoverThreshold();
-      return '<tr'+(isMover?' class="mover-row"':'')+'><td>'+escapeHtml(name)+'</td><td class="num">'+cp+'</td><td class="num">'+dc+'</td><td class="num">'+ap+'</td><td class="num '+dc_cls+'">'+dp+(dev!=null?'%':'')+'</td><td class="num">'+el+'</td><td class="num '+ic+'">'+imb+'</td></tr>';
+      return '<tr'+(isMover?' class="mover-row"':'')+'><td>'+escapeHtml(name)+'</td><td class="num">'+cp+'</td><td class="num">'+dc+'</td><td class="num '+dc_cls+'">'+dp+(dev!=null?'%':'')+'</td><td class="num">'+el+'</td><td class="num">'+ap+'</td></tr>';
     }
     function doSort(rows, col, dir){
       return [...rows].sort((a,b)=>{
@@ -950,16 +945,16 @@
     }
     function renderFastTable(){
       const tbody=document.getElementById('fastTableBody');
-      if(fastIds.size===0){tbody.innerHTML='<tr><td colspan="7" style="color:var(--muted);">Нажмите «⚡ Быстрые» и выберите инструменты</td></tr>';return;}
-      if(!fastRows.length){tbody.innerHTML='<tr><td colspan="7" style="color:var(--muted);">Загрузка...</td></tr>';return;}
+      if(fastIds.size===0){tbody.innerHTML='<tr><td colspan="6" style="color:var(--muted);">Нажмите «⚡ Быстрые» и выберите инструменты</td></tr>';return;}
+      if(!fastRows.length){tbody.innerHTML='<tr><td colspan="6" style="color:var(--muted);">Загрузка...</td></tr>';return;}
       tbody.innerHTML=doSort(fastRows,fastSortCol,fastSortDir).map(makeRowHtml).join('');
       updateSortIcons('fast',fastSortCol,fastSortDir);
       const c=document.getElementById('fastTableCount'); if(c) c.textContent='('+fastRows.length+')';
     }
     function renderSlowTable(){
       const tbody=document.getElementById('slowTableBody');
-      if(slowIds.size===0){tbody.innerHTML='<tr><td colspan="7" style="color:var(--muted);">Нажмите «🔄 Медленные» и выберите инструменты</td></tr>';return;}
-      if(!slowRows.length){tbody.innerHTML='<tr><td colspan="7" style="color:var(--muted);">Загрузка...</td></tr>';return;}
+      if(slowIds.size===0){tbody.innerHTML='<tr><td colspan="6" style="color:var(--muted);">Нажмите «🔄 Медленные» и выберите инструменты</td></tr>';return;}
+      if(!slowRows.length){tbody.innerHTML='<tr><td colspan="6" style="color:var(--muted);">Загрузка...</td></tr>';return;}
       tbody.innerHTML=doSort(slowRows,slowSortCol,slowSortDir).map(makeRowHtml).join('');
       updateSortIcons('slow',slowSortCol,slowSortDir);
       const c=document.getElementById('slowTableCount'); if(c) c.textContent='('+slowRows.length+')';
