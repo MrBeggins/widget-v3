@@ -1236,7 +1236,7 @@
         : '⏳ Скан всех фьючей (GetLastPrices + дневные закрытия)…';
       body.innerHTML = '';
       try {
-        const r = await fetch(`/api/movers?threshold=${threshold}${idsParam}`);
+        const r = await fetchWithTimeout(`/api/movers?threshold=${threshold}${idsParam}`, 60000);
         const data = await r.json();
         if (data.error) { status.textContent = '❌ ' + data.error; return; }
 
