@@ -438,9 +438,9 @@
               <th data-table="fast" data-sort="name">Актив <span class="sort-icon"></span></th>
               <th class="num" data-table="fast" data-sort="close">Цена 5м <span class="sort-icon"></span></th>
               <th class="num" data-table="fast" data-sort="daily_close">Цена д <span class="sort-icon"></span></th>
+              <th class="num" data-table="fast" data-sort="auction">Цена аукц. <span class="sort-icon"></span></th>
               <th class="num" data-table="fast" data-sort="deviation">Откл. % <span class="sort-icon"></span></th>
               <th class="num" data-table="fast" data-sort="lots">Лоты <span class="sort-icon"></span></th>
-              <th class="num" data-table="fast" data-sort="auction">Цена свед. <span class="sort-icon"></span></th>
             </tr>
           </thead>
           <tbody id="fastTableBody">
@@ -461,9 +461,9 @@
               <th data-table="slow" data-sort="name">Актив <span class="sort-icon"></span></th>
               <th class="num" data-table="slow" data-sort="close">Цена 5м <span class="sort-icon"></span></th>
               <th class="num" data-table="slow" data-sort="daily_close">Цена д <span class="sort-icon"></span></th>
+              <th class="num" data-table="slow" data-sort="auction">Цена аукц. <span class="sort-icon"></span></th>
               <th class="num" data-table="slow" data-sort="deviation">Откл. % <span class="sort-icon"></span></th>
               <th class="num" data-table="slow" data-sort="lots">Лоты <span class="sort-icon"></span></th>
-              <th class="num" data-table="slow" data-sort="auction">Цена свед. <span class="sort-icon"></span></th>
             </tr>
           </thead>
           <tbody id="slowTableBody">
@@ -917,7 +917,7 @@
       const dc_cls=dev>0?'pct-positive':dev<0?'pct-negative':'pct-null';
       const el=row.executed_lots!=null?row.executed_lots:(row.total_lots!=null?row.total_lots:'—');
       const isMover = dev != null && Math.abs(dev) >= getMoverThreshold();
-      return '<tr'+(isMover?' class="mover-row"':'')+'><td>'+escapeHtml(name)+'</td><td class="num">'+cp+'</td><td class="num">'+dc+'</td><td class="num '+dc_cls+'">'+dp+(dev!=null?'%':'')+'</td><td class="num">'+el+'</td><td class="num">'+ap+'</td></tr>';
+      return '<tr'+(isMover?' class="mover-row"':'')+'><td>'+escapeHtml(name)+'</td><td class="num">'+cp+'</td><td class="num">'+dc+'</td><td class="num">'+ap+'</td><td class="num '+dc_cls+'">'+dp+(dev!=null?'%':'')+'</td><td class="num">'+el+'</td></tr>';
     }
     function doSort(rows, col, dir){
       return [...rows].sort((a,b)=>{
