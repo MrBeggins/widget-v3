@@ -913,13 +913,24 @@
       const instrType=instrObj?instrObj.instrument_type:'';
       const cp=row.candle_5min_close!=null?formatPrice(row.candle_5min_close,instrType):(row.close_price!=null?formatPrice(row.close_price,instrType):'—');
       const dc=row.daily_close_price!=null?formatPrice(row.daily_close_price,instrType):(row.close_price!=null?formatPrice(row.close_price,instrType):'—');
+      // Цена аукц. = last_price из API (биржевая), Цена свед. = auction_price (наш расчёт из стакана)
+      const lp=row.last_price!=null?formatPrice(row.last_price,instrType):'—';
       const ap=row.auction_price!=null?formatPrice(row.auction_price,instrType):'—';
       const dev=row.deviation_pct??row.change_pct;
       const dp=dev!=null?(dev>0?'+'+dev:String(dev)):'—';
       const dc_cls=dev>0?'pct-positive':dev<0?'pct-negative':'pct-null';
       const el=row.executed_lots!=null?row.executed_lots:(row.total_lots!=null?row.total_lots:'—');
       const isMover = dev != null && Math.abs(dev) >= getMoverThreshold();
-      return '<tr'+(isMover?' class="mover-row"':'')+'><td>'+escapeHtml(name)+'</td><td class="num">'+cp+'</td><td class="num">'+dc+'</td><td class="num">'+ap+'</td><td class="num '+dc_cls+'">'+dp+(dev!=null?'%':'')+'</td><td class="num">'+el+'</td><td class="num">'+ap+'</td></tr>';
+      // Зелёная подсветка: расхождение Цена аукц. vs Цена свед. по %
+      let rowBg = '';
+      if (row.last_price && row.auction_price && row.last_price > 0) {
+        const diff = Math.abs(row.auction_price - row.last_price) / row.last_price * 100;
+        if      (diff >= 0.8) rowBg = 'background:rgba(0,200,83,0.22)';
+        else if (diff >= 0.6) rowBg = 'background:rgba(0,200,83,0.13)';
+        else if (diff >= 0.4) rowBg = 'background:rgba(0,200,83,0.06)';
+      }
+      const trAttr = isMover ? ' class="mover-row"' : (rowBg ? ` style="${rowBg}"` : '');
+      return `<tr${trAttr}><td>${escapeHtml(name)}</td><td class="num">${cp}</td><td class="num">${dc}</td><td class="num">${lp}</td><td class="num ${dc_cls}">${dp}${dev!=null?'%':''}</td><td class="num">${el}</td><td class="num">${ap}</td></tr>`;
     }
     function doSort(rows, col, dir){
       return [...rows].sort((a,b)=>{
