@@ -452,7 +452,7 @@ def _get_spot_changes(base_url, headers):
     Используется при сравнении фьюча с акцией в фоновом сканере.
     Дневное закрытие — из кэша (6 ч TTL) или свежий запрос.
     """
-    instruments_cache = _cache_get("futures") or []
+    instruments_cache = _cache_get("instruments_list") or []
     spot_instruments = [
         i for i in instruments_cache
         if i.get("instrument_type") == "shares"
@@ -507,7 +507,7 @@ def _warmup_daily_closes():
         ids = list(_scan_list_ids)
 
     if not ids:
-        instruments_cache = _cache_get("futures") or []
+        instruments_cache = _cache_get("instruments_list") or []
         ids = [
             i.get("instrument_uid") or i.get("figi", "")
             for i in instruments_cache
@@ -558,7 +558,7 @@ def _run_background_mover_scan():
     threshold = _scan_threshold
 
     if not scan_ids:
-        instruments_cache = _cache_get("futures") or []
+        instruments_cache = _cache_get("instruments_list") or []
         scan_ids = [
             i.get("instrument_uid") or i.get("figi", "")
             for i in instruments_cache
@@ -596,7 +596,7 @@ def _run_background_mover_scan():
         ob_snap = {k: dict(v) for k, v in _server_cache["orderbook"].items()}
 
     movers = []
-    instruments_cache = _cache_get("futures") or []
+    instruments_cache = _cache_get("instruments_list") or []
     names = {i.get("instrument_uid", ""): i.get("name") or i.get("ticker") or ""
              for i in instruments_cache}
 
@@ -2023,7 +2023,7 @@ def api_movers():
     ids_param = request.args.get("ids", "").strip()
 
     # Определяем список инструментов для скана
-    instruments_cache = _cache_get("futures")
+    instruments_cache = _cache_get("instruments_list")
     if not instruments_cache:
         return jsonify({"error": "futures not loaded, open widget first",
                         "movers": [], "count": 0, "scanned": 0, "fetched_closes": 0})
