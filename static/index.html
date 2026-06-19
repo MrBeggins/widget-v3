@@ -1339,10 +1339,22 @@
       if (!list) return;
       const q = (document.getElementById('scanSearchInput').value || '').toLowerCase();
       const items = allFutures.filter(f => {
-        const id = f.instrument_uid || f.figi || '';
-        if (_activeScanCat !== 'all' && (f.category || 'other') !== _activeScanCat) return false;
+        const cat = detectCategory(f.ticker, f.name, f.instrument_type);
+        if (_activeScanCat !== 'all' && cat !== _activeScanCat) return false;
         if (q && !(f.name||'').toLowerCase().includes(q) && !(f.ticker||'').toLowerCase().includes(q)) return false;
         return true;
+      });
+      // Счётчики на кнопках категорий
+      const counts = {};
+      allFutures.forEach(f => {
+        const c = detectCategory(f.ticker, f.name, f.instrument_type);
+        counts[c] = (counts[c] || 0) + 1;
+      });
+      document.querySelectorAll('[data-panel="scan"].category-btn').forEach(btn => {
+        const cat = btn.dataset.category;
+        const ex = btn.querySelector('.category-count'); if (ex) ex.remove();
+        const n = cat === 'all' ? allFutures.length : (counts[cat] || 0);
+        if (n > 0) { const sp = document.createElement('span'); sp.className = 'category-count'; sp.textContent = '(' + n + ')'; btn.appendChild(sp); }
       });
       list.innerHTML = items.map(f => {
         const id = f.instrument_uid || f.figi || '';
