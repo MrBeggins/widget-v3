@@ -530,6 +530,14 @@
       document.getElementById('profileBadge').textContent = '[' + CURRENT_PROFILE + ']';
     }
 
+    // Кнопки Тест, Мувы и +Профиль — только для профиля дамир
+    if (CURRENT_PROFILE !== 'дамир') {
+      ['btnTestPanel', 'btnMovers', 'btnNewProfile', 'moversPanel'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = 'none';
+      });
+    }
+
     function createNewProfile() {
       const name = prompt('Название профиля (латиницей):', '');
       if (!name) return;
