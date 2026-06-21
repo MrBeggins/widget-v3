@@ -237,6 +237,7 @@
     <button type="button" id="btnNewProfile">+ Профиль</button>
     <span class="auto-status active" id="autoStatus">обновление каждый час</span>
     <span id="mskClock" style="font-variant-numeric:tabular-nums;font-size:1.08rem;color:var(--text);margin-left:0.4rem;white-space:nowrap;"></span>
+    <span id="onlineCounter" style="display:none;font-size:0.9rem;color:var(--muted);margin-left:0.8rem;">👁 <span id="onlineCount">—</span> онлайн</span>
     <span class="mode-indicator" id="modeIndicator"></span>
     <span id="auctionBadge"></span>
     <span class="last-update" id="lastUpdate"></span>
@@ -1812,9 +1813,37 @@
       });
     });
 
+    // ===== Online counter =====
+    const _onlineSid = Math.random().toString(36).slice(2);
+
+    function _onlinePing() {
+      fetch('/api/online/ping?sid=' + _onlineSid).catch(() => {});
+    }
+
+    function _startOnline() {
+      _onlinePing();
+      setInterval(_onlinePing, 30000);
+
+      if (CURRENT_PROFILE === 'damir') {
+        const counter = document.getElementById('onlineCounter');
+        const countEl = document.getElementById('onlineCount');
+        if (counter) counter.style.display = '';
+        async function _updateCount() {
+          try {
+            const r = await fetch('/api/online/count');
+            const d = await r.json();
+            if (countEl) countEl.textContent = d.online ?? '—';
+          } catch(_) {}
+        }
+        _updateCount();
+        setInterval(_updateCount, 30000);
+      }
+    }
+
     // ===== Init =====
     (async function init(){
       startNotifyPolling();
+      _startOnline();
       setLoading(true);
       try{
         await loadFutures();

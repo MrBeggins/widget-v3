@@ -69,6 +69,11 @@ _stats_lock = threading.Lock()
 _notify_queue = []   # [{"id": str, "msg": str, "ts": float}]
 _notify_lock = threading.Lock()
 
+# ========== Онлайн-счётчик ==========
+_online_sessions = {}   # {session_id: last_seen_timestamp}
+_online_lock = threading.Lock()
+ONLINE_TTL = 90         # сек — сессия считается активной
+
 # ========== Список скана муверов + авто-результат ==========
 _scan_list_ids   = []          # {instrument_uid: ...} — инструменты для фонового скана
 _scan_list_lock  = threading.Lock()
@@ -1953,6 +1958,35 @@ def notify_poll():
         items = list(_notify_queue)
         _notify_queue.clear()
     return jsonify({"notifications": items})
+
+
+@app.route("/api/online/ping", methods=["POST", "GET"])
+def online_ping():
+    """Клиент пингует каждые 30 сек, сообщает свой session_id."""
+    sid = request.args.get("sid") or (request.json or {}).get("sid") if request.is_json else request.args.get("sid")
+    if not sid:
+        return jsonify({"error": "no sid"}), 400
+    now = time.time()
+    with _online_lock:
+        _online_sessions[sid] = now
+        # Чистим устаревшие
+        stale = [k for k, v in _online_sessions.items() if now - v > ONLINE_TTL]
+        for k in stale:
+            del _online_sessions[k]
+        count = len(_online_sessions)
+    return jsonify({"online": count})
+
+
+@app.route("/api/online/count")
+def online_count():
+    """Вернуть текущее количество онлайн-сессий."""
+    now = time.time()
+    with _online_lock:
+        stale = [k for k, v in _online_sessions.items() if now - v > ONLINE_TTL]
+        for k in stale:
+            del _online_sessions[k]
+        count = len(_online_sessions)
+    return jsonify({"online": count})
 
 
 @app.route("/api/auction_log")
