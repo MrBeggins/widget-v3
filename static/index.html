@@ -1665,12 +1665,57 @@
       } catch(e) { clearTimeout(t); return {}; }
     }
 
+    // Загружает исторические цены Bybit за последний 23:49 МСК через kline API
+    async function _fetchBybitHistoricalRef() {
+      const now = new Date();
+      // Последний 23:49 МСК = 20:49 UTC
+      const lastClose = new Date(now);
+      lastClose.setUTCHours(20, 49, 0, 0);
+      if (lastClose >= now) lastClose.setUTCDate(lastClose.getUTCDate() - 1);
+
+      const startMs = lastClose.getTime();
+      const endMs   = startMs + 120000; // +2 минуты
+      const mskDate = new Date(startMs + 3 * 3600 * 1000).toISOString().slice(0, 10);
+
+      const refPrices = {};
+      for (const entry of BYBIT_MOEX_MAP) {
+        try {
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 6000);
+          const r = await fetch(
+            `https://api.bybit.com/v5/market/kline?category=linear&symbol=${entry.bybit}&interval=1&start=${startMs}&end=${endMs}&limit=2`,
+            { signal: ctrl.signal }
+          );
+          clearTimeout(t);
+          if (!r.ok) continue;
+          const d = await r.json();
+          const list = d.result?.list || [];
+          if (list.length > 0) {
+            // Bybit kline: [startTime, open, high, low, close, volume, turnover]
+            const close = parseFloat(list[0][4]);
+            if (!isNaN(close) && close > 0) refPrices[entry.bybit] = close;
+          }
+        } catch(e) { /* тикер не торгуется — пропускаем */ }
+      }
+
+      if (Object.keys(refPrices).length > 0) {
+        _bybitRefData = { date: mskDate, capturedAt: lastClose.toISOString(), prices: refPrices };
+        try { localStorage.setItem(_BYBIT_REF_KEY, JSON.stringify(_bybitRefData)); } catch(_) {}
+      }
+    }
+
     async function _bybitSyncTick() {
       const [linear, spot] = await Promise.all([
         _fetchBybitTickers('linear'),
         _fetchBybitTickers('spot'),
       ]);
       _bybitPrices = { ...spot, ...linear }; // linear приоритетнее
+
+      // Если референса нет — загрузить из истории Bybit
+      if (!_bybitRefData?.prices || Object.keys(_bybitRefData.prices).length === 0) {
+        await _fetchBybitHistoricalRef();
+      }
+
       _bybitCheckCapture();
       renderFastTable(); renderSlowTable();
     }
