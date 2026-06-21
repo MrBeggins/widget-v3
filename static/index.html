@@ -1611,9 +1611,19 @@
     // Референсные цены в 23:49:55 МСК (загружаются из localStorage)
     const _BYBIT_REF_KEY = 'bybit_ref_' + CURRENT_PROFILE;
     let _bybitRefData = (() => {
-      try { return JSON.parse(localStorage.getItem(_BYBIT_REF_KEY) || 'null') || {}; } catch(_) { return {}; }
+      try {
+        const d = JSON.parse(localStorage.getItem(_BYBIT_REF_KEY) || 'null');
+        if (!d) return {};
+        // Инвалидируем если дата была выходным днём
+        if (d.date) {
+          const dt = new Date(d.date + 'T00:00:00Z');
+          const day = dt.getUTCDay(); // 0=вс, 6=сб
+          if (day === 0 || day === 6) { localStorage.removeItem(_BYBIT_REF_KEY); return {}; }
+        }
+        return d;
+      } catch(_) { return {}; }
     })();
-    // { capturedAt: ISO-string, prices: { BTCUSDT: 65000, ... } }
+    // { date: 'YYYY-MM-DD', capturedAt: ISO-string, prices: { BTCUSDT: 65000, ... } }
 
     let _bybitSyncTimer = null;
     let _bybitRefCapturedThisWindow = false; // предотвращает двойной захват в ту же секунду
@@ -1671,7 +1681,11 @@
       // Последний 23:49 МСК = 20:49 UTC
       const lastClose = new Date(now);
       lastClose.setUTCHours(20, 49, 0, 0);
-      if (lastClose >= now) lastClose.setUTCDate(lastClose.getUTCDate() - 1);
+      // Откатываемся до последнего рабочего дня (Пн-Пт), пропускаем выходные
+      // getUTCDay(): 0=вс, 6=сб
+      while (lastClose >= now || lastClose.getUTCDay() === 0 || lastClose.getUTCDay() === 6) {
+        lastClose.setUTCDate(lastClose.getUTCDate() - 1);
+      }
 
       const startMs = lastClose.getTime();
       const endMs   = startMs + 120000; // +2 минуты
