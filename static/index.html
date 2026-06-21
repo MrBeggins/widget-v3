@@ -1611,17 +1611,7 @@
     // Референсные цены в 23:49:55 МСК (загружаются из localStorage)
     const _BYBIT_REF_KEY = 'bybit_ref_' + CURRENT_PROFILE;
     let _bybitRefData = (() => {
-      try {
-        const d = JSON.parse(localStorage.getItem(_BYBIT_REF_KEY) || 'null');
-        if (!d) return {};
-        // Инвалидируем если дата была выходным днём
-        if (d.date) {
-          const dt = new Date(d.date + 'T00:00:00Z');
-          const day = dt.getUTCDay(); // 0=вс, 6=сб
-          if (day === 0 || day === 6) { localStorage.removeItem(_BYBIT_REF_KEY); return {}; }
-        }
-        return d;
-      } catch(_) { return {}; }
+      try { return JSON.parse(localStorage.getItem(_BYBIT_REF_KEY) || 'null') || {}; } catch(_) { return {}; }
     })();
     // { date: 'YYYY-MM-DD', capturedAt: ISO-string, prices: { BTCUSDT: 65000, ... } }
 
@@ -1629,16 +1619,19 @@
     let _bybitRefCapturedThisWindow = false; // предотвращает двойной захват в ту же секунду
 
     function _bybitMskNow() {
-      // Возвращает объект с MSK временем (UTC+3)
       const now = new Date();
       const msk = new Date(now.getTime() + 3 * 3600 * 1000);
       return { h: msk.getUTCHours(), m: msk.getUTCMinutes(), s: msk.getUTCSeconds(),
+               dow: msk.getUTCDay(), // 0=вс, 1=пн, ..., 5=пт, 6=сб
                date: msk.toISOString().slice(0, 10) };
     }
 
     function _bybitShouldCaptureRef(msk) {
-      // Окно захвата: 23:49:50 – 23:50:05 МСК (покрывает пропуск при 5-сек. поллинге)
-      return msk.h === 23 && msk.m === 49 && msk.s >= 50;
+      const isWeekend = (msk.dow === 0 || msk.dow === 6);
+      // Выходные: МОЕХ закрывается в 19:00, захват в 18:49:50 МСК
+      // Будни: МОЕХ закрывается в 23:50, захват в 23:49:50 МСК
+      const captureH = isWeekend ? 18 : 23;
+      return msk.h === captureH && msk.m === 49 && msk.s >= 50;
     }
 
     function _bybitCheckCapture() {
@@ -1675,21 +1668,34 @@
       } catch(e) { clearTimeout(t); return {}; }
     }
 
-    // Загружает исторические цены Bybit за последний 23:49 МСК через kline API
+    // Загружает исторические цены Bybit за последнее закрытие сессии через kline API.
+    // Выходные (сб/вс): закрытие 18:49 МСК = 15:49 UTC
+    // Будни (пн-пт):    закрытие 23:49 МСК = 20:49 UTC
     async function _fetchBybitHistoricalRef() {
       const now = new Date();
-      // Последний 23:49 МСК = 20:49 UTC
-      const lastClose = new Date(now);
-      lastClose.setUTCHours(20, 49, 0, 0);
-      // Откатываемся до последнего рабочего дня (Пн-Пт), пропускаем выходные
-      // getUTCDay(): 0=вс, 6=сб
-      while (lastClose >= now || lastClose.getUTCDay() === 0 || lastClose.getUTCDay() === 6) {
-        lastClose.setUTCDate(lastClose.getUTCDate() - 1);
+
+      // Ищем последний прошедший момент закрытия, идём назад по дням
+      let lastClose = null;
+      for (let daysBack = 0; daysBack <= 7; daysBack++) {
+        const day = new Date(now);
+        day.setUTCDate(day.getUTCDate() - daysBack);
+        day.setUTCHours(0, 0, 0, 0);
+
+        const dayMsk = new Date(day.getTime() + 3 * 3600000);
+        const dow = dayMsk.getUTCDay(); // 0=вс, 6=сб
+        const isWeekend = (dow === 0 || dow === 6);
+        // В выходные МОЕХ закрывается в 18:49 МСК = 15:49 UTC
+        // В будни — в 23:49 МСК = 20:49 UTC
+        const closeUTC = new Date(day);
+        closeUTC.setUTCHours(isWeekend ? 15 : 20, 49, 0, 0);
+
+        if (closeUTC <= now) { lastClose = closeUTC; break; }
       }
+      if (!lastClose) return;
 
       const startMs = lastClose.getTime();
       const endMs   = startMs + 120000; // +2 минуты
-      const mskDate = new Date(startMs + 3 * 3600 * 1000).toISOString().slice(0, 10);
+      const mskDate = new Date(startMs + 3 * 3600000).toISOString().slice(0, 10);
 
       const refPrices = {};
       for (const entry of BYBIT_MOEX_MAP) {
