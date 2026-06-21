@@ -103,6 +103,10 @@
     /* Мувер — отклонение > threshold от дневного закрытия */
     tr.mover-row { background: rgba(255,200,0,0.07) !important; }
     tr.mover-row td:first-child::after { content: ' 🔥'; font-size: 0.8em; }
+    /* Ручной ввод цены сведения */
+    .svod-input { background:transparent; border:none; border-bottom:1px dashed var(--border); color:var(--text); font-size:inherit; font-variant-numeric:tabular-nums; text-align:right; width:6em; padding:0.1rem 0; outline:none; }
+    .svod-input:focus { border-bottom-color:var(--accent); }
+    .svod-input::placeholder { color:var(--muted); }
     /* Settings panels */
     .settings-panel {
       background: var(--card);
@@ -485,6 +489,7 @@
     const STORAGE_FAST_IDS   = 'widget_fast_ids_'     + CURRENT_PROFILE;
     const STORAGE_SLOW_IDS   = 'widget_slow_ids_'     + CURRENT_PROFILE;
     const STORAGE_SCAN_IDS   = 'widget_scan_ids_'     + CURRENT_PROFILE;
+    const STORAGE_SVOD       = 'widget_svod_prices_'  + CURRENT_PROFILE;
     const STORAGE_NAMES      = 'damir_futures_names';
     const STORAGE_API_KEYS   = 'widget_api_keys_'     + CURRENT_PROFILE;
     const STORAGE_SETTINGS   = 'widget_user_settings_'+ CURRENT_PROFILE;
@@ -511,6 +516,7 @@
     let fastIds = new Set(JSON.parse(localStorage.getItem(STORAGE_FAST_IDS) || '[]'));
     let slowIds = new Set(JSON.parse(localStorage.getItem(STORAGE_SLOW_IDS) || '[]'));
     let scanIds = new Set(JSON.parse(localStorage.getItem(STORAGE_SCAN_IDS) || '[]'));
+    let svodPrices = JSON.parse(localStorage.getItem(STORAGE_SVOD) || '{}'); // {instrument_id: price}
     let namesMap = JSON.parse(localStorage.getItem(STORAGE_NAMES) || '{}');
     let autoRefreshEnabled = true;
     let autoFastTimer = null, autoSlowTimer = null;
@@ -913,24 +919,26 @@
       const instrType=instrObj?instrObj.instrument_type:'';
       const cp=row.candle_5min_close!=null?formatPrice(row.candle_5min_close,instrType):(row.close_price!=null?formatPrice(row.close_price,instrType):'—');
       const dc=row.daily_close_price!=null?formatPrice(row.daily_close_price,instrType):(row.close_price!=null?formatPrice(row.close_price,instrType):'—');
-      // Цена аукц. = last_price из API (биржевая), Цена свед. = auction_price (наш расчёт из стакана)
-      const lp=row.last_price!=null?formatPrice(row.last_price,instrType):'—';
-      const ap=row.auction_price!=null?formatPrice(row.auction_price,instrType):'—';
-      const dev=row.deviation_pct??row.change_pct;
-      const dp=dev!=null?(dev>0?'+'+dev:String(dev)):'—';
-      const dc_cls=dev>0?'pct-positive':dev<0?'pct-negative':'pct-null';
-      const el=row.executed_lots!=null?row.executed_lots:(row.total_lots!=null?row.total_lots:'—');
+      // Цена аукц. = наш расчёт из стакана (прогноз открытия)
+      const ap = row.auction_price != null ? formatPrice(row.auction_price, instrType) : '—';
+      const dev = row.deviation_pct ?? row.change_pct;
+      const dp = dev != null ? (dev > 0 ? '+' + dev : String(dev)) : '—';
+      const dc_cls = dev > 0 ? 'pct-positive' : dev < 0 ? 'pct-negative' : 'pct-null';
+      const el = row.executed_lots != null ? row.executed_lots : (row.total_lots != null ? row.total_lots : '—');
       const isMover = dev != null && Math.abs(dev) >= getMoverThreshold();
-      // Зелёная подсветка: расхождение Цена аукц. vs Цена свед. по %
+      // Цена свед. = ручной ввод пользователя
+      const svod = svodPrices[row.instrument_id];
+      // Зелёная подсветка: расхождение Цена аукц. vs Цена свед. (ручная)
       let rowBg = '';
-      if (row.last_price && row.auction_price && row.last_price > 0) {
-        const diff = Math.abs(row.auction_price - row.last_price) / row.last_price * 100;
+      if (row.auction_price && svod && svod > 0) {
+        const diff = Math.abs(row.auction_price - svod) / svod * 100;
         if      (diff >= 0.8) rowBg = 'background:rgba(0,200,83,0.22)';
         else if (diff >= 0.6) rowBg = 'background:rgba(0,200,83,0.13)';
         else if (diff >= 0.4) rowBg = 'background:rgba(0,200,83,0.06)';
       }
       const trAttr = isMover ? ' class="mover-row"' : (rowBg ? ` style="${rowBg}"` : '');
-      return `<tr${trAttr}><td>${escapeHtml(name)}</td><td class="num">${cp}</td><td class="num">${dc}</td><td class="num">${lp}</td><td class="num ${dc_cls}">${dp}${dev!=null?'%':''}</td><td class="num">${el}</td><td class="num">${ap}</td></tr>`;
+      const svodCell = `<td class="num"><input type="number" class="svod-input" data-id="${row.instrument_id}" value="${svod != null ? svod : ''}" placeholder="—" step="any"></td>`;
+      return `<tr${trAttr}><td>${escapeHtml(name)}</td><td class="num">${cp}</td><td class="num">${dc}</td><td class="num">${ap}</td><td class="num ${dc_cls}">${dp}${dev!=null?'%':''}</td><td class="num">${el}</td>${svodCell}</tr>`;
     }
     function doSort(rows, col, dir){
       return [...rows].sort((a,b)=>{
@@ -1416,6 +1424,18 @@
         }
       } catch(_) {}
     }
+
+    // Ручной ввод цены сведения — сохранение в localStorage и обновление подсветки
+    document.addEventListener('change', e => {
+      const inp = e.target.closest('.svod-input');
+      if (!inp) return;
+      const id = inp.dataset.id;
+      const val = inp.value !== '' ? parseFloat(inp.value) : null;
+      if (val != null && !isNaN(val)) svodPrices[id] = val;
+      else delete svodPrices[id];
+      try { localStorage.setItem(STORAGE_SVOD, JSON.stringify(svodPrices)); } catch(_) {}
+      renderFastTable(); renderSlowTable();
+    });
 
     // Обработка категорий панели скана
     document.addEventListener('click', e => {
