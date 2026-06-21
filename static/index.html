@@ -233,7 +233,6 @@
     <button type="button" id="btnTestPanel">🧪 Тест</button>
     <button type="button" id="btnAuctionLog">📋 Лог</button>
     <button type="button" id="btnMovers">🔥 Мувы <span id="moversBadge" style="display:none;background:var(--negative);color:#fff;border-radius:10px;padding:0 0.35em;font-size:0.8em;margin-left:0.2em;"></span></button>
-    <button type="button" id="btnBybit">💱 Bybit <span id="bybitDot" style="display:none;width:7px;height:7px;background:var(--accent);border-radius:50%;margin-left:0.2em;vertical-align:middle;"></span></button>
     <button type="button" id="btnAutoRefresh">Авто: ВКЛ</button>
     <button type="button" id="btnNewProfile">+ Профиль</button>
     <span class="auto-status active" id="autoStatus">обновление каждый час</span>
@@ -257,16 +256,6 @@
       <thead><tr><th>Акция</th><th>% акции</th><th>Фьючерс</th><th>% фьюча</th><th>Расхождение</th></tr></thead>
       <tbody id="divergenceBody"></tbody>
     </table>
-  </div>
-
-  <!-- Bybit panel -->
-  <div id="bybitPanel" class="settings-panel" style="display:none;max-height:none;">
-    <h2>💱 Bybit → Цена свед. <small style="color:var(--muted);font-weight:normal;">— реальные цены с Bybit × курс Si → автозаполнение «Цена свед.»</small></h2>
-    <div style="display:flex;gap:0.55rem;align-items:center;flex-wrap:wrap;margin-bottom:0.7rem;">
-      <button type="button" id="btnBybitToggle" onclick="toggleBybitSync()" style="font-weight:700;">▶ Запустить</button>
-      <span id="bybitStatusLine" style="font-size:0.97rem;color:var(--muted);">Отключён</span>
-    </div>
-    <div id="bybitMapTable" style="font-size:0.95rem;"></div>
   </div>
 
   <!-- Movers panel -->
@@ -451,12 +440,12 @@
           <thead>
             <tr>
               <th data-table="fast" data-sort="name">Актив <span class="sort-icon"></span></th>
-              <th class="num" data-table="fast" data-sort="close">Цена 5м <span class="sort-icon"></span></th>
               <th class="num" data-table="fast" data-sort="daily_close">Цена д <span class="sort-icon"></span></th>
               <th class="num" data-table="fast" data-sort="auction">Цена аукц. <span class="sort-icon"></span></th>
               <th class="num" data-table="fast" data-sort="deviation">Откл. % <span class="sort-icon"></span></th>
               <th class="num" data-table="fast" data-sort="lots">Лоты <span class="sort-icon"></span></th>
-              <th class="num" data-table="fast" data-sort="calc">Цена свед. <span class="sort-icon"></span></th>
+              <th class="num" data-table="fast" data-sort="spot">Цена спота <span class="sort-icon"></span></th>
+              <th class="num" data-table="fast" data-sort="calc">Цена сведения <span class="sort-icon"></span></th>
             </tr>
           </thead>
           <tbody id="fastTableBody">
@@ -475,12 +464,12 @@
           <thead>
             <tr>
               <th data-table="slow" data-sort="name">Актив <span class="sort-icon"></span></th>
-              <th class="num" data-table="slow" data-sort="close">Цена 5м <span class="sort-icon"></span></th>
               <th class="num" data-table="slow" data-sort="daily_close">Цена д <span class="sort-icon"></span></th>
               <th class="num" data-table="slow" data-sort="auction">Цена аукц. <span class="sort-icon"></span></th>
               <th class="num" data-table="slow" data-sort="deviation">Откл. % <span class="sort-icon"></span></th>
               <th class="num" data-table="slow" data-sort="lots">Лоты <span class="sort-icon"></span></th>
-              <th class="num" data-table="slow" data-sort="calc">Цена свед. <span class="sort-icon"></span></th>
+              <th class="num" data-table="slow" data-sort="spot">Цена спота <span class="sort-icon"></span></th>
+              <th class="num" data-table="slow" data-sort="calc">Цена сведения <span class="sort-icon"></span></th>
             </tr>
           </thead>
           <tbody id="slowTableBody">
@@ -867,8 +856,8 @@
     }
 
     function closeAllPanels(){
-      ['fastPanel','slowPanel','settingsPanel','testPanel','auctionLogPanel','moversPanel','bybitPanel'].forEach(id=>{const p=document.getElementById(id);if(p)p.style.display='none';});
-      ['btnFastPanel','btnSlowPanel','btnSettings','btnTestPanel','btnAuctionLog','btnMovers','btnBybit'].forEach(id=>{const b=document.getElementById(id);if(b)b.classList.remove('active');});
+      ['fastPanel','slowPanel','settingsPanel','testPanel','auctionLogPanel','moversPanel'].forEach(id=>{const p=document.getElementById(id);if(p)p.style.display='none';});
+      ['btnFastPanel','btnSlowPanel','btnSettings','btnTestPanel','btnAuctionLog','btnMovers'].forEach(id=>{const b=document.getElementById(id);if(b)b.classList.remove('active');});
     }
 
     function openPanel(pt){
@@ -928,28 +917,30 @@
       const name=row.name||row.instrument_id;
       const instrObj=allFutures.find(f=>f.instrument_uid===row.instrument_id||f.figi===row.instrument_id);
       const instrType=instrObj?instrObj.instrument_type:'';
-      const cp=row.candle_5min_close!=null?formatPrice(row.candle_5min_close,instrType):(row.close_price!=null?formatPrice(row.close_price,instrType):'—');
       const dc=row.daily_close_price!=null?formatPrice(row.daily_close_price,instrType):(row.close_price!=null?formatPrice(row.close_price,instrType):'—');
-      // Цена аукц. = наш расчёт из стакана (прогноз открытия)
       const ap = row.auction_price != null ? formatPrice(row.auction_price, instrType) : '—';
       const dev = row.deviation_pct ?? row.change_pct;
       const dp = dev != null ? (dev > 0 ? '+' + dev : String(dev)) : '—';
       const dc_cls = dev > 0 ? 'pct-positive' : dev < 0 ? 'pct-negative' : 'pct-null';
       const el = row.executed_lots != null ? row.executed_lots : (row.total_lots != null ? row.total_lots : '—');
       const isMover = dev != null && Math.abs(dev) >= getMoverThreshold();
-      // Цена свед. = ручной ввод пользователя
+      // Цена спота = расчётная цена с Bybit (daily_close * текущий/референс)
+      const spotPrice = _getSpotPrice(row);
+      const spotStr = spotPrice != null ? formatPrice(spotPrice, instrType) : '—';
+      // Цена сведения = ручной ввод (приоритет над спотом)
       const svod = svodPrices[row.instrument_id];
-      // Зелёная подсветка: расхождение Цена аукц. vs Цена свед. (ручная)
+      // Эталон для подсветки: ручной ввод > цена спота
+      const refPrice = (svod != null && svod > 0) ? svod : spotPrice;
       let rowBg = '';
-      if (row.auction_price && svod && svod > 0) {
-        const diff = Math.abs(row.auction_price - svod) / svod * 100;
+      if (row.auction_price && refPrice && refPrice > 0) {
+        const diff = Math.abs(row.auction_price - refPrice) / refPrice * 100;
         if      (diff >= 0.8) rowBg = 'background:rgba(0,200,83,0.22)';
         else if (diff >= 0.6) rowBg = 'background:rgba(0,200,83,0.13)';
         else if (diff >= 0.4) rowBg = 'background:rgba(0,200,83,0.06)';
       }
       const trAttr = isMover ? ' class="mover-row"' : (rowBg ? ` style="${rowBg}"` : '');
       const svodCell = `<td class="num"><input type="number" class="svod-input" data-id="${row.instrument_id}" value="${svod != null ? svod : ''}" placeholder="—" step="any"></td>`;
-      return `<tr${trAttr}><td>${escapeHtml(name)}</td><td class="num">${cp}</td><td class="num">${dc}</td><td class="num">${ap}</td><td class="num ${dc_cls}">${dp}${dev!=null?'%':''}</td><td class="num">${el}</td>${svodCell}</tr>`;
+      return `<tr${trAttr}><td>${escapeHtml(name)}</td><td class="num">${dc}</td><td class="num">${ap}</td><td class="num ${dc_cls}">${dp}${dev!=null?'%':''}</td><td class="num">${el}</td><td class="num">${spotStr}</td>${svodCell}</tr>`;
     }
     function doSort(rows, col, dir){
       return [...rows].sort((a,b)=>{
@@ -1602,190 +1593,116 @@
       }
     }
 
-    // ===== Bybit → Цена свед. =====
+    // ===== Bybit → Цена спота =====
     const BYBIT_MOEX_MAP = [
-      { bybit:'BTCUSDT',  moex:['BTC-6.26','BTC-7.26','IBIT-9.26','IBIT-12.26'] },
-      { bybit:'ETHUSDT',  moex:['ETH-6.26','ETH-7.26','ETHA-9.26','ETHA-12.26'] },
-      { bybit:'XAUUSD',   moex:['GOLD-9.26','GOLDM-9.26','GOLD-12.26','GOLDM-12.26'] },
-      { bybit:'XAGUSD',   moex:['SILV-9.26','SILVM-9.26','SILV-12.26','SILVM-12.26'] },
-      { bybit:'SP500',    moex:['SPUF-9.26'] },
-      { bybit:'NAS100',   moex:['NASD-9.26'] },
-      { bybit:'UKOUSD',   moex:['BR-7.26','BRM-7.26'] },
-      { bybit:'XPTUSD',   moex:['PLT-9.26','PLTM-9.26','PLT-12.26','PLTM-12.26'] },
-      { bybit:'XPDUSD',   moex:['PLD-9.26','PLDM-9.26','PLD-12.26','PLDM-12.26'] },
+      { bybit:'BTCUSDT', moex:['BTC-6.26','BTC-7.26','IBIT-9.26','IBIT-12.26'] },
+      { bybit:'ETHUSDT', moex:['ETH-6.26','ETH-7.26','ETHA-9.26','ETHA-12.26'] },
+      { bybit:'XAUUSD',  moex:['GOLD-9.26','GOLDM-9.26','GOLD-12.26','GOLDM-12.26'] },
+      { bybit:'XAGUSD',  moex:['SILV-9.26','SILVM-9.26','SILV-12.26','SILVM-12.26'] },
+      { bybit:'SP500',   moex:['SPUF-9.26'] },
+      { bybit:'NAS100',  moex:['NASD-9.26'] },
+      { bybit:'UKOUSD',  moex:['BR-7.26','BRM-7.26'] },
+      { bybit:'XPTUSD',  moex:['PLT-9.26','PLTM-9.26','PLT-12.26','PLTM-12.26'] },
+      { bybit:'XPDUSD',  moex:['PLD-9.26','PLDM-9.26','PLD-12.26','PLDM-12.26'] },
     ];
 
-    let _bybitEnabled    = localStorage.getItem('bybit_enabled_' + CURRENT_PROFILE) === '1';
-    let _bybitPrices     = {};   // { 'BTCUSDT': 65000, ... }
-    let _bybitTimer      = null;
-    let _bybitLastUpdate = null;
-    let _bybitError      = null;
+    // Текущие цены Bybit (обновляются каждые 5 сек)
+    let _bybitPrices = {};
+    // Референсные цены в 23:49:55 МСК (загружаются из localStorage)
+    const _BYBIT_REF_KEY = 'bybit_ref_' + CURRENT_PROFILE;
+    let _bybitRefData = (() => {
+      try { return JSON.parse(localStorage.getItem(_BYBIT_REF_KEY) || 'null') || {}; } catch(_) { return {}; }
+    })();
+    // { capturedAt: ISO-string, prices: { BTCUSDT: 65000, ... } }
 
-    function _bybitParseExpiry(name) {
-      const m = name.match(/-(\d+)\.(\d+)/);
-      if (!m) return null;
-      return { month: parseInt(m[1]), year: 2000 + parseInt(m[2]) };
-    }
+    let _bybitSyncTimer = null;
+    let _bybitRefCapturedThisWindow = false; // предотвращает двойной захват в ту же секунду
 
-    function _bybitIsExpired(name) {
-      const exp = _bybitParseExpiry(name);
-      if (!exp) return false;
+    function _bybitMskNow() {
+      // Возвращает объект с MSK временем (UTC+3)
       const now = new Date();
-      const y = now.getFullYear(), mo = now.getMonth() + 1, d = now.getDate();
-      if (y > exp.year) return true;
-      if (y === exp.year && mo > exp.month) return true;
-      // MOEX фьючи экспирируют ~15-го числа месяца
-      if (y === exp.year && mo === exp.month && d > 16) return true;
-      return false;
+      const msk = new Date(now.getTime() + 3 * 3600 * 1000);
+      return { h: msk.getUTCHours(), m: msk.getUTCMinutes(), s: msk.getUTCSeconds(),
+               date: msk.toISOString().slice(0, 10) };
     }
 
-    function _bybitFindUid(namePrefix) {
-      const p = namePrefix.toUpperCase();
-      const f = allFutures.find(f => {
-        const n = (f.name || '').toUpperCase();
-        return n.startsWith(p) || n.includes(' ' + p) || n.includes(p + ' ');
-      });
-      return f ? (f.instrument_uid || f.figi || null) : null;
+    function _bybitShouldCaptureRef(msk) {
+      // Окно захвата: 23:49:50 – 23:50:05 МСК (покрывает пропуск при 5-сек. поллинге)
+      return msk.h === 23 && msk.m === 49 && msk.s >= 50;
+    }
+
+    function _bybitCheckCapture() {
+      const msk = _bybitMskNow();
+      if (!_bybitShouldCaptureRef(msk)) {
+        _bybitRefCapturedThisWindow = false; // сброс флага после окна
+        return;
+      }
+      if (_bybitRefCapturedThisWindow) return; // уже захватили в этом окне
+      if (_bybitRefData.date === msk.date) return; // уже есть за сегодня
+      if (Object.keys(_bybitPrices).length === 0) return; // цены ещё не пришли
+
+      _bybitRefData = { date: msk.date, capturedAt: new Date().toISOString(), prices: { ..._bybitPrices } };
+      _bybitRefCapturedThisWindow = true;
+      try { localStorage.setItem(_BYBIT_REF_KEY, JSON.stringify(_bybitRefData)); } catch(_) {}
+      // Перерисовываем таблицы — обновились референсные цены
+      renderFastTable(); renderSlowTable();
     }
 
     async function _fetchBybitTickers(category) {
-      const url = `https://api.bybit.com/v5/market/tickers?category=${category}`;
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 8000);
       try {
-        const r = await fetch(url, { signal: ctrl.signal });
+        const r = await fetch(`https://api.bybit.com/v5/market/tickers?category=${category}`, { signal: ctrl.signal });
         clearTimeout(t);
         if (!r.ok) return {};
         const d = await r.json();
         const out = {};
         for (const item of (d.result?.list || [])) {
-          const price = parseFloat(item.lastPrice);
-          if (!isNaN(price) && price > 0) out[item.symbol] = price;
+          const p = parseFloat(item.lastPrice);
+          if (!isNaN(p) && p > 0) out[item.symbol] = p;
         }
         return out;
       } catch(e) { clearTimeout(t); return {}; }
     }
 
     async function _bybitSyncTick() {
-      try {
-        const linear = await _fetchBybitTickers('linear');
-        const spot   = await _fetchBybitTickers('spot');
-        _bybitPrices = { ...spot, ...linear };  // linear приоритетнее
-        _bybitError  = null;
-      } catch(e) {
-        _bybitError = String(e);
-      }
+      const [linear, spot] = await Promise.all([
+        _fetchBybitTickers('linear'),
+        _fetchBybitTickers('spot'),
+      ]);
+      _bybitPrices = { ...spot, ...linear }; // linear приоритетнее
+      _bybitCheckCapture();
+      renderFastTable(); renderSlowTable();
+    }
 
-      // Цены пишем напрямую без конвертации
-      let updated = 0;
+    // Рассчитывает «Цену спота» для строки таблицы:
+    // daily_close × (текущий_bybit / bybit_в_23:49:55)
+    function _getSpotPrice(row) {
+      const instrObj = allFutures.find(f =>
+        f.instrument_uid === row.instrument_id || f.figi === row.instrument_id
+      );
+      if (!instrObj) return null;
+      const instName = (instrObj.name || '').toUpperCase();
+
       for (const entry of BYBIT_MOEX_MAP) {
-        const price = _bybitPrices[entry.bybit];
-        if (!price) continue;
-        for (const moexName of entry.moex) {
-          if (_bybitIsExpired(moexName)) continue;
-          const uid = _bybitFindUid(moexName);
-          if (!uid) continue;
-          svodPrices[uid] = Math.round(price * 100) / 100;
-          updated++;
-        }
-      }
+        const matched = entry.moex.some(moexName => {
+          const p = moexName.toUpperCase();
+          return instName.startsWith(p) || instName.includes(p);
+        });
+        if (!matched) continue;
 
-      if (updated > 0) {
-        try { localStorage.setItem(STORAGE_SVOD, JSON.stringify(svodPrices)); } catch(_) {}
-        renderFastTable(); renderSlowTable();
+        const cur = _bybitPrices[entry.bybit];
+        const ref = _bybitRefData?.prices?.[entry.bybit];
+        const dailyClose = row.daily_close_price || row.close_price;
+        if (!cur || !ref || !dailyClose || ref === 0) return null;
+        return dailyClose * (cur / ref);
       }
-
-      _bybitLastUpdate = new Date();
-      renderBybitPanel();
+      return null;
     }
 
-    function startBybitSync() {
-      if (_bybitTimer) return;
-      _bybitSyncTick();
-      _bybitTimer = setInterval(_bybitSyncTick, 3000);
-      const dot = document.getElementById('bybitDot');
-      if (dot) dot.style.display = 'inline-block';
-    }
-
-    function stopBybitSync() {
-      if (_bybitTimer) { clearInterval(_bybitTimer); _bybitTimer = null; }
-      const dot = document.getElementById('bybitDot');
-      if (dot) dot.style.display = 'none';
-    }
-
-    function toggleBybitSync() {
-      _bybitEnabled = !_bybitEnabled;
-      localStorage.setItem('bybit_enabled_' + CURRENT_PROFILE, _bybitEnabled ? '1' : '0');
-      if (_bybitEnabled) startBybitSync(); else stopBybitSync();
-      renderBybitPanel();
-    }
-
-    function renderBybitPanel() {
-      const btnToggle = document.getElementById('btnBybitToggle');
-      const statusEl  = document.getElementById('bybitStatusLine');
-      const tableEl   = document.getElementById('bybitMapTable');
-      if (!btnToggle) return;
-
-      if (_bybitEnabled) {
-        btnToggle.textContent = '⏹ Остановить';
-        btnToggle.style.background = 'var(--negative)';
-        btnToggle.style.color = '#fff';
-      } else {
-        btnToggle.textContent = '▶ Запустить';
-        btnToggle.style.background = '';
-        btnToggle.style.color = '';
-      }
-
-      if (statusEl) {
-        if (!_bybitEnabled) {
-          statusEl.innerHTML = '<span style="color:var(--muted)">Отключён</span>';
-        } else if (_bybitError) {
-          statusEl.innerHTML = `<span style="color:var(--negative)">⚠ Ошибка: ${escapeHtml(_bybitError)}</span>`;
-        } else {
-          const updStr = _bybitLastUpdate ? _bybitLastUpdate.toLocaleTimeString('ru') : '—';
-          const found  = Object.keys(_bybitPrices).length;
-          statusEl.innerHTML = `<span style="color:var(--accent)">● Активен</span>&nbsp;&nbsp;тикеров с Bybit: ${found}&nbsp;&nbsp;|&nbsp;&nbsp;обновлено: ${updStr}`;
-        }
-      }
-
-      if (tableEl) {
-        const now = new Date();
-        let html = '<table style="border-collapse:collapse;width:100%;font-size:0.93rem;"><thead><tr>'
-          + '<th style="text-align:left;padding:0.25rem 0.5rem;color:var(--muted)">Bybit тикер</th>'
-          + '<th style="text-align:right;padding:0.25rem 0.5rem;color:var(--muted)">Цена</th>'
-          + '<th style="text-align:left;padding:0.25rem 0.5rem;color:var(--muted)">MOEX фьючи</th>'
-          + '</tr></thead><tbody>';
-
-        for (const entry of BYBIT_MOEX_MAP) {
-          const price = _bybitPrices[entry.bybit];
-          const priceStr = price ? price.toLocaleString('ru', {maximumFractionDigits: 2}) : '—';
-
-          const activeMoex  = entry.moex.filter(n => !_bybitIsExpired(n));
-          const expiredMoex = entry.moex.filter(n =>  _bybitIsExpired(n));
-
-          const moexCells = [
-            ...activeMoex.map(n => {
-              const uid = _bybitFindUid(n);
-              const ok  = uid ? '✓' : '?';
-              const col = uid ? 'var(--accent)' : 'var(--warning,#f90)';
-              return `<span style="color:${col};margin-right:0.4rem">${ok}&nbsp;${escapeHtml(n)}</span>`;
-            }),
-            ...expiredMoex.map(n => `<span style="color:var(--muted);text-decoration:line-through;margin-right:0.4rem">${escapeHtml(n)}</span>`),
-          ].join('');
-
-          html += `<tr style="border-top:1px solid var(--border)">
-            <td style="padding:0.3rem 0.5rem;font-weight:600">${escapeHtml(entry.bybit)}</td>
-            <td style="padding:0.3rem 0.5rem;text-align:right;font-variant-numeric:tabular-nums">${priceStr}</td>
-            <td style="padding:0.3rem 0.5rem">${moexCells}</td>
-          </tr>`;
-        }
-        html += '</tbody></table>';
-        tableEl.innerHTML = html;
-      }
-    }
-
-    // Автостарт если был включён
-    if (_bybitEnabled) startBybitSync();
+    // Автозапуск — всегда работает в фоне, кнопки нет
+    _bybitSyncTimer = setInterval(_bybitSyncTick, 5000);
+    _bybitSyncTick();
 
     // ===== Обработчики =====
     document.getElementById('btnRefresh').addEventListener('click',()=>{loadFastData();loadSlowData();});
@@ -1795,13 +1712,6 @@
     document.getElementById('btnTestPanel').addEventListener('click',toggleTestPanel);
     document.getElementById('btnAuctionLog').addEventListener('click',toggleAuctionLog);
     document.getElementById('btnMovers').addEventListener('click',toggleMoversPanel);
-    document.getElementById('btnBybit').addEventListener('click', () => {
-      const panel = document.getElementById('bybitPanel');
-      const btn   = document.getElementById('btnBybit');
-      const isOpen = panel.style.display !== 'none';
-      closeAllPanels();
-      if (!isOpen) { panel.style.display = 'block'; btn.classList.add('active'); renderBybitPanel(); }
-    });
     document.getElementById('btnAutoRefresh').addEventListener('click',toggleAutoRefresh);
     document.getElementById('btnNewProfile').addEventListener('click',createNewProfile);
 
