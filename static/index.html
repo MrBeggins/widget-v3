@@ -1708,35 +1708,34 @@
 
       const refPrices = {};
 
-      async function _bybitKlineClose(symbol, start, end, interval) {
-        try {
-          const ctrl = new AbortController();
-          const t = setTimeout(() => ctrl.abort(), 8000);
-          const r = await fetch(
-            `https://api.bybit.com/v5/market/kline?category=linear&symbol=${symbol}&interval=${interval}&start=${start}&end=${end}&limit=5`,
-            { signal: ctrl.signal }
-          );
-          clearTimeout(t);
-          if (!r.ok) return null;
-          const d = await r.json();
-          const list = d.result?.list || [];
-          // Берём свечу ближайшую к концу диапазона (list[0] = самая свежая)
-          for (const candle of list) {
-            const p = parseFloat(candle[4]); // close
-            if (!isNaN(p) && p > 0) return p;
-          }
-        } catch(e) {}
+      // Ищет 1-мин свечу у Bybit, пробует linear затем spot
+      async function _bybitKlineClose(symbol, start, end) {
+        for (const cat of ['linear', 'spot']) {
+          try {
+            const ctrl = new AbortController();
+            const t = setTimeout(() => ctrl.abort(), 8000);
+            const r = await fetch(
+              `https://api.bybit.com/v5/market/kline?category=${cat}&symbol=${symbol}&interval=1&start=${start}&end=${end}&limit=5`,
+              { signal: ctrl.signal }
+            );
+            clearTimeout(t);
+            if (!r.ok) continue;
+            const d = await r.json();
+            for (const candle of (d.result?.list || [])) {
+              const p = parseFloat(candle[4]); // close
+              if (!isNaN(p) && p > 0) return p;
+            }
+          } catch(e) {}
+        }
         return null;
       }
 
+      // Окно поиска: ±30 мин вокруг момента закрытия МОЕХ
+      const searchStart = startMs - 1800000;
+      const searchEnd   = endMs   + 1800000;
+
       for (const entry of BYBIT_MOEX_MAP) {
-        // 1. Пробуем 1-мин свечу в окне ±30 мин вокруг закрытия
-        let price = await _bybitKlineClose(entry.bybit, startMs - 1800000, endMs + 1800000, '1');
-        // 2. Фолбэк: дневная свеча за этот день
-        if (!price) {
-          const dayStart = new Date(lastClose); dayStart.setUTCHours(0, 0, 0, 0);
-          price = await _bybitKlineClose(entry.bybit, dayStart.getTime(), endMs + 3600000, 'D');
-        }
+        const price = await _bybitKlineClose(entry.bybit, searchStart, searchEnd);
         if (price) refPrices[entry.bybit] = price;
       }
 
