@@ -1680,50 +1680,55 @@
     // Загружает исторические цены Bybit за последнее закрытие сессии через kline API.
     // Выходные (сб/вс): закрытие 18:49 МСК = 15:49 UTC
     // Будни (пн-пт):    закрытие 23:49 МСК = 20:49 UTC
-    async function _fetchBybitHistoricalRef() {
-      const now = new Date();
+    // Крипто торгуется 24/7 — для них берём ближайшее закрытие
+    // TradFi (золото, нефть, индексы) — только будние дни, не торгуются в выходные
+    const TRADFI_SYMBOLS = new Set(['XAUUSD','XAGUSD','SP500','NAS100','UKOUSD','XPTUSD','XPDUSD']);
 
-      // Ищем последний прошедший момент закрытия, идём назад по дням
-      let lastClose = null;
+    function _lastSessionClose(now, weekdayOnly) {
       for (let daysBack = 0; daysBack <= 7; daysBack++) {
         const day = new Date(now);
         day.setUTCDate(day.getUTCDate() - daysBack);
         day.setUTCHours(0, 0, 0, 0);
-
-        const dayMsk = new Date(day.getTime() + 3 * 3600000);
-        const dow = dayMsk.getUTCDay(); // 0=вс, 6=сб
+        const dow = new Date(day.getTime() + 3 * 3600000).getUTCDay(); // день недели в МСК
         const isWeekend = (dow === 0 || dow === 6);
-        // В выходные МОЕХ закрывается в 18:49 МСК = 15:49 UTC
-        // В будни — в 23:49 МСК = 20:49 UTC
+        if (weekdayOnly && isWeekend) continue; // для TradFi пропускаем выходные
         const closeUTC = new Date(day);
         closeUTC.setUTCHours(isWeekend ? 15 : 20, 49, 0, 0);
-
-        if (closeUTC <= now) { lastClose = closeUTC; break; }
+        if (closeUTC <= now) return closeUTC;
       }
-      if (!lastClose) return;
+      return null;
+    }
 
-      const startMs = lastClose.getTime();
-      const endMs   = startMs + 120000; // +2 минуты
-      const mskDate = new Date(startMs + 3 * 3600000).toISOString().slice(0, 10);
+    async function _fetchBybitHistoricalRef() {
+      const now = new Date();
 
+      const cryptoClose  = _lastSessionClose(now, false); // любой день
+      const tradfiClose  = _lastSessionClose(now, true);  // только будни (Пн-Пт)
+      if (!cryptoClose && !tradfiClose) return;
+
+      // Для даты сохранения берём будничное закрытие (оно показательнее)
+      const lastClose = tradfiClose || cryptoClose;
+      const mskDate = new Date(lastClose.getTime() + 3 * 3600000).toISOString().slice(0, 10);
       const refPrices = {};
 
       // Ищет свечу у Bybit: пробует 1м → 5м → 60м, linear затем spot
-      async function _bybitKlineClose(symbol, start, end) {
+      async function _bybitKlineClose(symbol, closeTs) {
+        const s = closeTs - 1800000; // -30 мин
+        const e = closeTs + 1800000; // +30 мин
         for (const interval of ['1', '5', '60']) {
           for (const cat of ['linear', 'spot']) {
             try {
               const ctrl = new AbortController();
               const t = setTimeout(() => ctrl.abort(), 8000);
               const r = await fetch(
-                `https://api.bybit.com/v5/market/kline?category=${cat}&symbol=${symbol}&interval=${interval}&start=${start}&end=${end}&limit=5`,
+                `https://api.bybit.com/v5/market/kline?category=${cat}&symbol=${symbol}&interval=${interval}&start=${s}&end=${e}&limit=5`,
                 { signal: ctrl.signal }
               );
               clearTimeout(t);
               if (!r.ok) continue;
               const d = await r.json();
               for (const candle of (d.result?.list || [])) {
-                const p = parseFloat(candle[4]); // close
+                const p = parseFloat(candle[4]);
                 if (!isNaN(p) && p > 0) return p;
               }
             } catch(e) {}
@@ -1732,12 +1737,13 @@
         return null;
       }
 
-      // Окно поиска: ±30 мин вокруг момента закрытия МОЕХ
-      const searchStart = startMs - 1800000;
-      const searchEnd   = endMs   + 1800000;
-
       for (const entry of BYBIT_MOEX_MAP) {
-        const price = await _bybitKlineClose(entry.bybit, searchStart, searchEnd);
+        // Крипто — берём ближайшее закрытие; TradFi — только будничное
+        const closeTs = TRADFI_SYMBOLS.has(entry.bybit)
+          ? (tradfiClose?.getTime() ?? null)
+          : (cryptoClose?.getTime() ?? null);
+        if (!closeTs) continue;
+        const price = await _bybitKlineClose(entry.bybit, closeTs);
         if (price) refPrices[entry.bybit] = price;
       }
 
