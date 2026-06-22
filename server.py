@@ -1962,15 +1962,15 @@ def notify_poll():
 
 @app.route("/api/online/ping", methods=["POST", "GET"])
 def online_ping():
-    """Клиент пингует каждые 30 сек, сообщает свой session_id."""
-    sid = request.args.get("sid") or (request.json or {}).get("sid") if request.is_json else request.args.get("sid")
+    """Клиент пингует каждые 30 сек, сообщает session_id и профиль."""
+    sid     = request.args.get("sid", "")
+    profile = request.args.get("profile", "unknown")
     if not sid:
         return jsonify({"error": "no sid"}), 400
     now = time.time()
     with _online_lock:
-        _online_sessions[sid] = now
-        # Чистим устаревшие
-        stale = [k for k, v in _online_sessions.items() if now - v > ONLINE_TTL]
+        _online_sessions[sid] = {"ts": now, "profile": profile}
+        stale = [k for k, v in _online_sessions.items() if now - v["ts"] > ONLINE_TTL]
         for k in stale:
             del _online_sessions[k]
         count = len(_online_sessions)
@@ -1979,14 +1979,14 @@ def online_ping():
 
 @app.route("/api/online/count")
 def online_count():
-    """Вернуть текущее количество онлайн-сессий."""
+    """Вернуть количество онлайн-сессий и список профилей."""
     now = time.time()
     with _online_lock:
-        stale = [k for k, v in _online_sessions.items() if now - v > ONLINE_TTL]
+        stale = [k for k, v in _online_sessions.items() if now - v["ts"] > ONLINE_TTL]
         for k in stale:
             del _online_sessions[k]
-        count = len(_online_sessions)
-    return jsonify({"online": count})
+        profiles = [v["profile"] for v in _online_sessions.values()]
+    return jsonify({"online": len(profiles), "profiles": profiles})
 
 
 @app.route("/api/auction_log")

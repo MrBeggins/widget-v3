@@ -1837,7 +1837,7 @@
     const _onlineSid = Math.random().toString(36).slice(2);
 
     function _onlinePing() {
-      fetch('/api/online/ping?sid=' + _onlineSid).catch(() => {});
+      fetch('/api/online/ping?sid=' + _onlineSid + '&profile=' + encodeURIComponent(CURRENT_PROFILE)).catch(() => {});
     }
 
     function _startOnline() {
@@ -1852,7 +1852,12 @@
           try {
             const r = await fetch('/api/online/count');
             const d = await r.json();
-            if (countEl) countEl.textContent = d.online ?? '—';
+            if (countEl) {
+              const profiles = d.profiles || [];
+              countEl.textContent = profiles.length
+                ? profiles.join(', ')
+                : '—';
+            }
           } catch(_) {}
         }
         _updateCount();
