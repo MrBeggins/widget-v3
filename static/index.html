@@ -1708,24 +1708,26 @@
 
       const refPrices = {};
 
-      // Ищет 1-мин свечу у Bybit, пробует linear затем spot
+      // Ищет свечу у Bybit: пробует 1м → 5м → 60м, linear затем spot
       async function _bybitKlineClose(symbol, start, end) {
-        for (const cat of ['linear', 'spot']) {
-          try {
-            const ctrl = new AbortController();
-            const t = setTimeout(() => ctrl.abort(), 8000);
-            const r = await fetch(
-              `https://api.bybit.com/v5/market/kline?category=${cat}&symbol=${symbol}&interval=1&start=${start}&end=${end}&limit=5`,
-              { signal: ctrl.signal }
-            );
-            clearTimeout(t);
-            if (!r.ok) continue;
-            const d = await r.json();
-            for (const candle of (d.result?.list || [])) {
-              const p = parseFloat(candle[4]); // close
-              if (!isNaN(p) && p > 0) return p;
-            }
-          } catch(e) {}
+        for (const interval of ['1', '5', '60']) {
+          for (const cat of ['linear', 'spot']) {
+            try {
+              const ctrl = new AbortController();
+              const t = setTimeout(() => ctrl.abort(), 8000);
+              const r = await fetch(
+                `https://api.bybit.com/v5/market/kline?category=${cat}&symbol=${symbol}&interval=${interval}&start=${start}&end=${end}&limit=5`,
+                { signal: ctrl.signal }
+              );
+              clearTimeout(t);
+              if (!r.ok) continue;
+              const d = await r.json();
+              for (const candle of (d.result?.list || [])) {
+                const p = parseFloat(candle[4]); // close
+                if (!isNaN(p) && p > 0) return p;
+              }
+            } catch(e) {}
+          }
         }
         return null;
       }
