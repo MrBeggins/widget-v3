@@ -1606,13 +1606,9 @@
     const BYBIT_MOEX_MAP = [
       { bybit:'BTCUSDT', moex:['BTC-6.26','BTC-7.26','IBIT-9.26','IBIT-12.26'] },
       { bybit:'ETHUSDT', moex:['ETH-6.26','ETH-7.26','ETHA-9.26','ETHA-12.26'] },
-      { bybit:'XAUUSD',  moex:['GOLD-9.26','GOLDM-9.26','GOLD-12.26','GOLDM-12.26'] },
-      { bybit:'XAGUSD',  moex:['SILV-9.26','SILVM-9.26','SILV-12.26','SILVM-12.26'] },
-      { bybit:'SP500',   moex:['SPUF-9.26'] },
-      { bybit:'NAS100',  moex:['NASD-9.26'] },
-      { bybit:'UKOUSD',  moex:['BR-7.26','BRM-7.26'] },
-      { bybit:'XPTUSD',  moex:['PLT-9.26','PLTM-9.26','PLT-12.26','PLTM-12.26'] },
-      { bybit:'XPDUSD',  moex:['PLD-9.26','PLDM-9.26','PLD-12.26','PLDM-12.26'] },
+      { bybit:'XAUUSDT', moex:['GOLD-9.26','GOLDM-9.26','GOLD-12.26','GOLDM-12.26'] },
+      { bybit:'XAGUSDT', moex:['SILV-9.26','SILVM-9.26','SILV-12.26','SILVM-12.26'] },
+      // SP500, NAS100, UKOUSD, XPTUSD, XPDUSD — нет на Bybit как perpetual futures
     ];
 
     // Текущие цены Bybit (обновляются каждые 5 сек)
@@ -1682,7 +1678,7 @@
     // Будни (пн-пт):    закрытие 23:49 МСК = 20:49 UTC
     // Крипто торгуется 24/7 — для них берём ближайшее закрытие
     // TradFi (золото, нефть, индексы) — только будние дни, не торгуются в выходные
-    const TRADFI_SYMBOLS = new Set(['XAUUSD','XAGUSD','SP500','NAS100','UKOUSD','XPTUSD','XPDUSD']);
+    const TRADFI_SYMBOLS = new Set(['XAUUSDT','XAGUSDT']);
 
     function _lastSessionClose(now, weekdayOnly) {
       for (let daysBack = 0; daysBack <= 7; daysBack++) {
