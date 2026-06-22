@@ -1737,15 +1737,20 @@
         return null;
       }
 
+      console.log('[bybit-ref] cryptoClose:', cryptoClose?.toISOString());
+      console.log('[bybit-ref] tradfiClose:', tradfiClose?.toISOString());
+
       for (const entry of BYBIT_MOEX_MAP) {
-        // Крипто — берём ближайшее закрытие; TradFi — только будничное
         const closeTs = TRADFI_SYMBOLS.has(entry.bybit)
           ? (tradfiClose?.getTime() ?? null)
           : (cryptoClose?.getTime() ?? null);
-        if (!closeTs) continue;
+        if (!closeTs) { console.log(`[bybit-ref] ${entry.bybit}: нет closeTs`); continue; }
         const price = await _bybitKlineClose(entry.bybit, closeTs);
+        console.log(`[bybit-ref] ${entry.bybit}: ${price ?? 'НЕ НАЙДЕНО'}`);
         if (price) refPrices[entry.bybit] = price;
       }
+
+      console.log('[bybit-ref] итог:', refPrices);
 
       if (Object.keys(refPrices).length > 0) {
         _bybitRefData = { date: mskDate, capturedAt: lastClose.toISOString(), prices: refPrices };
