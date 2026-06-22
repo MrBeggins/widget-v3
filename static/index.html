@@ -1603,12 +1603,21 @@
     }
 
     // ===== Bybit → Цена спота =====
+    // Крипто — Bybit
     const BYBIT_MOEX_MAP = [
       { bybit:'BTCUSDT', moex:['BTC-6.26','BTC-7.26','IBIT-9.26','IBIT-12.26'] },
       { bybit:'ETHUSDT', moex:['ETH-6.26','ETH-7.26','ETHA-9.26','ETHA-12.26'] },
-      { bybit:'XAUUSDT', moex:['GOLD-9.26','GOLDM-9.26','GOLD-12.26','GOLDM-12.26'] },
-      { bybit:'XAGUSDT', moex:['SILV-9.26','SILVM-9.26','SILV-12.26','SILVM-12.26'] },
-      // SP500, NAS100, UKOUSD, XPTUSD, XPDUSD — нет на Bybit как perpetual futures
+    ];
+
+    // TradFi — Yahoo Finance (через /api/tradfi_prices на нашем сервере)
+    const YAHOO_MOEX_MAP = [
+      { yahoo:'GC=F', moex:['GOLD-9.26','GOLDM-9.26','GOLD-12.26','GOLDM-12.26'] },
+      { yahoo:'SI=F', moex:['SILV-9.26','SILVM-9.26','SILV-12.26','SILVM-12.26'] },
+      { yahoo:'ES=F', moex:['SPUF-9.26'] },
+      { yahoo:'NQ=F', moex:['NASD-9.26'] },
+      { yahoo:'BZ=F', moex:['BR-7.26','BRM-7.26'] },
+      { yahoo:'PL=F', moex:['PLT-9.26','PLTM-9.26','PLT-12.26','PLTM-12.26'] },
+      { yahoo:'PA=F', moex:['PLD-9.26','PLDM-9.26','PLD-12.26','PLDM-12.26'] },
     ];
 
     // Текущие цены Bybit (обновляются каждые 5 сек)
@@ -1621,7 +1630,8 @@
     // { date: 'YYYY-MM-DD', capturedAt: ISO-string, prices: { BTCUSDT: 65000, ... } }
 
     let _bybitSyncTimer = null;
-    let _bybitRefCapturedThisWindow = false; // предотвращает двойной захват в ту же секунду
+    let _bybitRefCapturedThisWindow = false;
+    // _yahooRefCapturedThisWindow объявлен выше вместе с _yahooRefData
 
     function _bybitMskNow() {
       const now = new Date();
@@ -1642,18 +1652,31 @@
     function _bybitCheckCapture() {
       const msk = _bybitMskNow();
       if (!_bybitShouldCaptureRef(msk)) {
-        _bybitRefCapturedThisWindow = false; // сброс флага после окна
+        _bybitRefCapturedThisWindow = false;
+        _yahooRefCapturedThisWindow = false;
         return;
       }
-      if (_bybitRefCapturedThisWindow) return; // уже захватили в этом окне
-      if (_bybitRefData.date === msk.date) return; // уже есть за сегодня
-      if (Object.keys(_bybitPrices).length === 0) return; // цены ещё не пришли
 
-      _bybitRefData = { date: msk.date, capturedAt: new Date().toISOString(), prices: { ..._bybitPrices } };
-      _bybitRefCapturedThisWindow = true;
-      try { localStorage.setItem(_BYBIT_REF_KEY, JSON.stringify(_bybitRefData)); } catch(_) {}
-      // Перерисовываем таблицы — обновились референсные цены
-      renderFastTable(); renderSlowTable();
+      const isWeekend = (msk.dow === 0 || msk.dow === 6);
+      let changed = false;
+
+      // Захват Bybit (крипто, всегда)
+      if (!_bybitRefCapturedThisWindow && _bybitRefData.date !== msk.date && Object.keys(_bybitPrices).length > 0) {
+        _bybitRefData = { date: msk.date, capturedAt: new Date().toISOString(), prices: { ..._bybitPrices } };
+        try { localStorage.setItem(_BYBIT_REF_KEY, JSON.stringify(_bybitRefData)); } catch(_) {}
+        _bybitRefCapturedThisWindow = true;
+        changed = true;
+      }
+
+      // Захват Yahoo TradFi (только будни — в выходные TradFi не торгуется)
+      if (!isWeekend && !_yahooRefCapturedThisWindow && _yahooRefData.date !== msk.date && Object.keys(_yahooTFPrices).length > 0) {
+        _yahooRefData = { date: msk.date, capturedAt: new Date().toISOString(), prices: { ..._yahooTFPrices } };
+        try { localStorage.setItem(_YAHOO_REF_KEY, JSON.stringify(_yahooRefData)); } catch(_) {}
+        _yahooRefCapturedThisWindow = true;
+        changed = true;
+      }
+
+      if (changed) { renderFastTable(); renderSlowTable(); }
     }
 
     async function _fetchBybitTickers(category) {
@@ -1678,7 +1701,13 @@
     // Будни (пн-пт):    закрытие 23:49 МСК = 20:49 UTC
     // Крипто торгуется 24/7 — для них берём ближайшее закрытие
     // TradFi (золото, нефть, индексы) — только будние дни, не торгуются в выходные
-    const TRADFI_SYMBOLS = new Set(['XAUUSDT','XAGUSDT']);
+    // Yahoo TradFi цены (обновляются каждые 60 сек через /api/tradfi_prices)
+    let _yahooTFPrices = {};
+    const _YAHOO_REF_KEY = 'yahoo_ref_' + CURRENT_PROFILE;
+    let _yahooRefData = (() => {
+      try { return JSON.parse(localStorage.getItem(_YAHOO_REF_KEY) || 'null') || {}; } catch(_) { return {}; }
+    })();
+    let _yahooRefCapturedThisWindow = false;
 
     function _lastSessionClose(now, weekdayOnly) {
       for (let daysBack = 0; daysBack <= 7; daysBack++) {
@@ -1697,14 +1726,10 @@
 
     async function _fetchBybitHistoricalRef() {
       const now = new Date();
+      const cryptoClose = _lastSessionClose(now, false);
+      if (!cryptoClose) return;
 
-      const cryptoClose  = _lastSessionClose(now, false); // любой день
-      const tradfiClose  = _lastSessionClose(now, true);  // только будни (Пн-Пт)
-      if (!cryptoClose && !tradfiClose) return;
-
-      // Для даты сохранения берём будничное закрытие (оно показательнее)
-      const lastClose = tradfiClose || cryptoClose;
-      const mskDate = new Date(lastClose.getTime() + 3 * 3600000).toISOString().slice(0, 10);
+      const mskDate = new Date(cryptoClose.getTime() + 3 * 3600000).toISOString().slice(0, 10);
       const refPrices = {};
 
       // Ищет свечу у Bybit: пробует 1м → 5м → 60м, linear затем spot
@@ -1734,18 +1759,53 @@
       }
 
       for (const entry of BYBIT_MOEX_MAP) {
-        const closeTs = TRADFI_SYMBOLS.has(entry.bybit)
-          ? (tradfiClose?.getTime() ?? null)
-          : (cryptoClose?.getTime() ?? null);
-        if (!closeTs) continue;
-        const price = await _bybitKlineClose(entry.bybit, closeTs);
+        const price = await _bybitKlineClose(entry.bybit, cryptoClose.getTime());
         if (price) refPrices[entry.bybit] = price;
       }
 
       if (Object.keys(refPrices).length > 0) {
-        _bybitRefData = { date: mskDate, capturedAt: lastClose.toISOString(), prices: refPrices };
+        _bybitRefData = { date: mskDate, capturedAt: cryptoClose.toISOString(), prices: refPrices };
         try { localStorage.setItem(_BYBIT_REF_KEY, JSON.stringify(_bybitRefData)); } catch(_) {}
       }
+    }
+
+    async function _fetchYahooTFPrices() {
+      try {
+        const r = await fetch('/api/tradfi_prices');
+        if (!r.ok) return;
+        const data = await r.json();
+        const prices = {};
+        for (const [sym, info] of Object.entries(data)) {
+          if (info?.price) prices[sym] = info.price;
+        }
+        _yahooTFPrices = prices;
+      } catch(e) {}
+    }
+
+    async function _fetchYahooHistoricalRef() {
+      const now = new Date();
+      const tradfiClose = _lastSessionClose(now, true); // только будни
+      if (!tradfiClose) return;
+
+      const mskDate = new Date(tradfiClose.getTime() + 3 * 3600000).toISOString().slice(0, 10);
+      const ts = Math.floor(tradfiClose.getTime() / 1000);
+      try {
+        const r = await fetch(`/api/tradfi_ref?ts=${ts}`);
+        if (!r.ok) return;
+        const refs = await r.json();
+        if (Object.keys(refs).length > 0) {
+          _yahooRefData = { date: mskDate, capturedAt: tradfiClose.toISOString(), prices: refs };
+          try { localStorage.setItem(_YAHOO_REF_KEY, JSON.stringify(_yahooRefData)); } catch(_) {}
+        }
+      } catch(e) {}
+    }
+
+    async function _yahooSyncTick() {
+      await _fetchYahooTFPrices();
+      if (!_yahooRefData?.prices || Object.keys(_yahooRefData.prices).length === 0) {
+        await _fetchYahooHistoricalRef();
+      }
+      renderFastTable(); renderSlowTable();
     }
 
     async function _bybitSyncTick() {
@@ -1772,26 +1832,38 @@
       );
       if (!instrObj) return null;
       const instName = (instrObj.name || '').toUpperCase();
+      const dailyClose = row.daily_close_price || row.close_price;
+      if (!dailyClose) return null;
 
+      // Крипто — Bybit
       for (const entry of BYBIT_MOEX_MAP) {
-        const matched = entry.moex.some(moexName => {
-          const p = moexName.toUpperCase();
-          return instName.startsWith(p) || instName.includes(p);
-        });
+        const matched = entry.moex.some(m => { const p = m.toUpperCase(); return instName.startsWith(p) || instName.includes(p); });
         if (!matched) continue;
-
         const cur = _bybitPrices[entry.bybit];
         const ref = _bybitRefData?.prices?.[entry.bybit];
-        const dailyClose = row.daily_close_price || row.close_price;
-        if (!cur || !ref || !dailyClose || ref === 0) return null;
+        if (!cur || !ref || ref === 0) return null;
         return dailyClose * (cur / ref);
       }
+
+      // TradFi — Yahoo Finance
+      for (const entry of YAHOO_MOEX_MAP) {
+        const matched = entry.moex.some(m => { const p = m.toUpperCase(); return instName.startsWith(p) || instName.includes(p); });
+        if (!matched) continue;
+        const cur = _yahooTFPrices[entry.yahoo];
+        const ref = _yahooRefData?.prices?.[entry.yahoo];
+        if (!cur || !ref || ref === 0) return null;
+        return dailyClose * (cur / ref);
+      }
+
       return null;
     }
 
     // Автозапуск — всегда работает в фоне, кнопки нет
     _bybitSyncTimer = setInterval(_bybitSyncTick, 5000);
     _bybitSyncTick();
+    // Yahoo TradFi — обновляется каждые 60 сек
+    setInterval(_yahooSyncTick, 60000);
+    _yahooSyncTick();
 
     // ===== Обработчики =====
     document.getElementById('btnRefresh').addEventListener('click',()=>{loadFastData();loadSlowData();});

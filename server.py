@@ -69,6 +69,20 @@ _stats_lock = threading.Lock()
 _notify_queue = []   # [{"id": str, "msg": str, "ts": float}]
 _notify_lock = threading.Lock()
 
+# ========== TradFi цены (Yahoo Finance proxy) ==========
+YAHOO_SYMBOLS = {
+    "GC=F":  "gold",       # Gold futures
+    "SI=F":  "silver",     # Silver futures
+    "ES=F":  "sp500",      # E-Mini S&P 500
+    "NQ=F":  "nasdaq",     # Nasdaq 100
+    "BZ=F":  "oil",        # Brent Crude
+    "PL=F":  "platinum",   # Platinum
+    "PA=F":  "palladium",  # Palladium
+}
+_tradfi_cache = {"ts": 0, "prices": {}, "refs": {}}
+_tradfi_lock = threading.Lock()
+TRADFI_CACHE_TTL = 60  # сек
+
 # ========== Онлайн-счётчик ==========
 _online_sessions = {}   # {session_id: last_seen_timestamp}
 _online_lock = threading.Lock()
@@ -1958,6 +1972,81 @@ def notify_poll():
         items = list(_notify_queue)
         _notify_queue.clear()
     return jsonify({"notifications": items})
+
+
+@app.route("/api/tradfi_prices")
+def tradfi_prices():
+    """Прокси Yahoo Finance для TradFi инструментов. Кэш 60 сек."""
+    now = time.time()
+    with _tradfi_lock:
+        if now - _tradfi_cache["ts"] < TRADFI_CACHE_TTL:
+            return jsonify(_tradfi_cache["prices"])
+
+    prices = {}
+    for sym in YAHOO_SYMBOLS:
+        try:
+            enc = requests.utils.quote(sym, safe="")
+            r = requests.get(
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{enc}?interval=1m&range=1d",
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=8,
+            )
+            if r.ok:
+                meta = r.json()["chart"]["result"][0]["meta"]
+                prices[sym] = {
+                    "price": meta.get("regularMarketPrice"),
+                    "prev":  meta.get("chartPreviousClose"),
+                }
+        except Exception:
+            pass
+
+    with _tradfi_lock:
+        _tradfi_cache["ts"] = now
+        _tradfi_cache["prices"] = prices
+    return jsonify(prices)
+
+
+@app.route("/api/tradfi_ref")
+def tradfi_ref():
+    """Цена TradFi инструментов на конкретный timestamp (Unix сек).
+       Используется для получения референса закрытия МОЕХ."""
+    try:
+        close_ts = int(request.args.get("ts", 0))
+    except ValueError:
+        return jsonify({"error": "bad ts"}), 400
+    if not close_ts:
+        return jsonify({"error": "ts required"}), 400
+
+    period1 = close_ts - 3600
+    period2 = close_ts + 3600
+    refs = {}
+    for sym in YAHOO_SYMBOLS:
+        try:
+            enc = requests.utils.quote(sym, safe="")
+            r = requests.get(
+                f"https://query1.finance.yahoo.com/v8/finance/chart/{enc}"
+                f"?interval=1m&period1={period1}&period2={period2}",
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=8,
+            )
+            if not r.ok:
+                continue
+            result = r.json()["chart"]["result"][0]
+            timestamps = result["timestamp"]
+            closes = result["indicators"]["quote"][0]["close"]
+            # Находим свечу ближайшую к close_ts
+            best_price = None
+            best_diff = 9999999
+            for i, t in enumerate(timestamps):
+                diff = abs(t - close_ts)
+                if diff < best_diff and closes[i] is not None:
+                    best_diff = diff
+                    best_price = closes[i]
+            if best_price:
+                refs[sym] = best_price
+        except Exception:
+            pass
+    return jsonify(refs)
 
 
 @app.route("/api/online/ping", methods=["POST", "GET"])
