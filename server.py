@@ -839,7 +839,7 @@ def index():
     Без параметра ?profile=... показываем заглушку, чтобы доступ был только по
     именным ссылкам вида /?profile=nikita.
     """
-    ALLOWED_PROFILES = {"damir", "ruslan", "kolya", "vanya", "nikita", "anton", "alex"}
+    ALLOWED_PROFILES = {"damir", "ruslan", "kolya", "vanya", "anton", "sasha"}
     profile = request.args.get("profile", "").strip().lower()
     if not profile or profile not in ALLOWED_PROFILES:
         # Простая заглушка без виджета и без настроек
