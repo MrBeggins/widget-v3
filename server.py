@@ -74,6 +74,16 @@ _online_sessions = {}   # {session_id: last_seen_timestamp}
 _online_lock = threading.Lock()
 ONLINE_TTL = 90         # сек — сессия считается активной
 
+# ========== TradFi-цены (от сборщика на ПК пользователя) ==========
+# Сборщик (Tampermonkey на bybit.com) шлёт сюда цены TradFi-инструментов
+# (золото/серебро/платина/палладий/нефть/индексы), которые недоступны
+# через публичный crypto-API Bybit. Виджет читает их с нашего сервера.
+_tradfi_prices = {}     # {symbol: {"cur": float, "ref": float, "refDate": str}}
+_tradfi_lock = threading.Lock()
+_tradfi_updated = 0.0   # время последнего пуша
+TRADFI_PUSH_TOKEN = os.environ.get("TRADFI_PUSH_TOKEN", "tradfi-secret-2026")
+TRADFI_STALE = 120      # сек — данные считаются устаревшими, если сборщик молчит
+
 # ========== Список скана муверов + авто-результат ==========
 _scan_list_ids   = []          # {instrument_uid: ...} — инструменты для фонового скана
 _scan_list_lock  = threading.Lock()
@@ -1987,6 +1997,59 @@ def online_count():
             del _online_sessions[k]
         profiles = [v["profile"] for v in _online_sessions.values()]
     return jsonify({"online": len(profiles), "profiles": profiles})
+
+
+@app.route("/api/tradfi/push", methods=["POST", "OPTIONS"])
+def tradfi_push():
+    """Сборщик (Tampermonkey на bybit.com) шлёт цены TradFi-инструментов.
+    Формат: {"token": "...", "prices": {"XAUUSD+": {"cur": 4112.9, "ref": 4095.1, "refDate": "2026-06-22"}, ...}}
+    """
+    if request.method == "OPTIONS":
+        return ("", 204)
+    global _tradfi_updated
+    data = request.get_json(silent=True) or {}
+    if data.get("token") != TRADFI_PUSH_TOKEN:
+        return jsonify({"error": "bad token"}), 403
+    prices = data.get("prices") or {}
+    if not isinstance(prices, dict):
+        return jsonify({"error": "bad prices"}), 400
+    cleaned = {}
+    for sym, v in prices.items():
+        try:
+            cur = float(v.get("cur"))
+            entry = {"cur": cur}
+            if v.get("ref") is not None:
+                entry["ref"] = float(v.get("ref"))
+            if v.get("refDate"):
+                entry["refDate"] = str(v.get("refDate"))
+            if cur > 0:
+                cleaned[str(sym)] = entry
+        except (TypeError, ValueError):
+            continue
+    with _tradfi_lock:
+        # merge: новые cur всегда перетирают; ref сохраняем если не прислали
+        for sym, entry in cleaned.items():
+            old = _tradfi_prices.get(sym, {})
+            if "ref" not in entry and "ref" in old:
+                entry["ref"] = old["ref"]
+                if "refDate" in old and "refDate" not in entry:
+                    entry["refDate"] = old["refDate"]
+            _tradfi_prices[sym] = entry
+        _tradfi_updated = time.time()
+        n = len(_tradfi_prices)
+    return jsonify({"ok": True, "stored": n})
+
+
+@app.route("/api/tradfi/prices")
+def tradfi_get():
+    """Виджет читает TradFi-цены. Возвращает пусто, если сборщик молчит > TRADFI_STALE."""
+    now = time.time()
+    with _tradfi_lock:
+        age = now - _tradfi_updated
+        if _tradfi_updated == 0 or age > TRADFI_STALE:
+            return jsonify({"prices": {}, "stale": True, "age": round(age, 1)})
+        prices = dict(_tradfi_prices)
+    return jsonify({"prices": prices, "stale": False, "age": round(age, 1)})
 
 
 @app.route("/api/auction_log")
