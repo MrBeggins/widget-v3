@@ -1606,8 +1606,8 @@
     const BYBIT_MOEX_MAP = [
       { bybit:'BTCUSDT', moex:['BTC-6.26','BTC-7.26','IBIT-9.26','IBIT-12.26'] },
       { bybit:'ETHUSDT', moex:['ETH-6.26','ETH-7.26','ETHA-9.26','ETHA-12.26'] },
-      { bybit:'XAUUSDT', moex:['GOLD-9.26','GOLDM-9.26','GOLD-12.26','GOLDM-12.26'] },
-      { bybit:'XAGUSDT', moex:['SILV-9.26','SILVM-9.26','SILV-12.26','SILVM-12.26'] },
+      { bybit:'XAUUSD+', moex:['GOLD-9.26','GOLDM-9.26','GOLD-12.26','GOLDM-12.26'] },
+      { bybit:'XAGUSD',  moex:['SILV-9.26','SILVM-9.26','SILV-12.26','SILVM-12.26'] },
       { bybit:'SP500',   moex:['SPUF-9.26'] },
       { bybit:'NAS100',  moex:['NASD-9.26'] },
       { bybit:'UKOUSD',  moex:['BR-7.26','BRM-7.26'] },
@@ -1626,6 +1626,25 @@
 
     let _bybitSyncTimer = null;
     let _bybitRefCapturedThisWindow = false; // предотвращает двойной захват в ту же секунду
+
+    // ===== TradFi-данные (золото/серебро/платина/палладий/нефть/индексы) =====
+    // Эти инструменты недоступны через crypto-API Bybit. Их собирает сборщик
+    // (Tampermonkey на bybit.com) и шлёт на наш сервер. Формат:
+    // { 'XAUUSD+': { cur: 4116.5, ref: 4191.2, refDate: '2026-06-22' }, ... }
+    let _tradfiData = {};
+
+    async function _tradfiSync() {
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 8000);
+        const r = await fetch('/api/tradfi/prices', { signal: ctrl.signal });
+        clearTimeout(t);
+        if (!r.ok) return;
+        const d = await r.json();
+        _tradfiData = (d && !d.stale && d.prices) ? d.prices : {};
+        renderFastTable(); renderSlowTable();
+      } catch(e) {}
+    }
 
     function _bybitMskNow() {
       const now = new Date();
@@ -1681,8 +1700,9 @@
     // Выходные (сб/вс): закрытие 18:49 МСК = 15:49 UTC
     // Будни (пн-пт):    закрытие 23:49 МСК = 20:49 UTC
     // Крипто торгуется 24/7 — для них берём ближайшее закрытие
-    // TradFi (золото, нефть, индексы) — только будние дни, не торгуются в выходные
-    const TRADFI_SYMBOLS = new Set(['XAUUSDT','XAGUSDT','SP500','NAS100','UKOUSD','XPTUSD','XPDUSD']);
+    // TradFi (золото, нефть, индексы) — приходят со сборщика (_tradfiData),
+    // НЕ через crypto-API Bybit. В историческую загрузку их не включаем.
+    const TRADFI_SYMBOLS = new Set(['XAUUSD+','XAGUSD','SP500','NAS100','UKOUSD','XPTUSD','XPDUSD']);
 
     function _lastSessionClose(now, weekdayOnly) {
       for (let daysBack = 0; daysBack <= 7; daysBack++) {
@@ -1702,12 +1722,11 @@
     async function _fetchBybitHistoricalRef() {
       const now = new Date();
 
-      const cryptoClose  = _lastSessionClose(now, false); // любой день
-      const tradfiClose  = _lastSessionClose(now, true);  // только будни (Пн-Пт)
-      if (!cryptoClose && !tradfiClose) return;
+      const cryptoClose  = _lastSessionClose(now, false); // любой день (крипта 24/7)
+      if (!cryptoClose) return;
 
       // Дата-метку берём из крипто-закрытия (торгуется 24/7 — надёжный маркер свежести)
-      const lastClose = cryptoClose || tradfiClose;
+      const lastClose = cryptoClose;
       const mskDate = new Date(lastClose.getTime() + 3 * 3600000).toISOString().slice(0, 10);
       const refPrices = {};
 
@@ -1738,9 +1757,9 @@
       }
 
       for (const entry of BYBIT_MOEX_MAP) {
-        const closeTs = TRADFI_SYMBOLS.has(entry.bybit)
-          ? (tradfiClose?.getTime() ?? null)
-          : (cryptoClose?.getTime() ?? null);
+        // TradFi-символы приходят со сборщика — не тянем их через crypto-API
+        if (TRADFI_SYMBOLS.has(entry.bybit)) continue;
+        const closeTs = cryptoClose?.getTime() ?? null;
         if (!closeTs) continue;
         const price = await _bybitKlineClose(entry.bybit, closeTs);
         if (price) refPrices[entry.bybit] = price;
@@ -1793,8 +1812,17 @@
         });
         if (!matched) continue;
 
-        const cur = _bybitPrices[entry.bybit];
-        const ref = _bybitRefData?.prices?.[entry.bybit];
+        // TradFi-символы (золото/серебро/платина/палладий/нефть/индексы) —
+        // из сборщика; крипта (BTC/ETH) — из публичного crypto-API Bybit.
+        let cur, ref;
+        const tf = _tradfiData[entry.bybit];
+        if (tf) {
+          cur = tf.cur;
+          ref = tf.ref;
+        } else {
+          cur = _bybitPrices[entry.bybit];
+          ref = _bybitRefData?.prices?.[entry.bybit];
+        }
         const dailyClose = row.daily_close_price || row.close_price;
         if (!cur || !ref || !dailyClose || ref === 0) return null;
         return dailyClose * (cur / ref);
@@ -1805,6 +1833,10 @@
     // Автозапуск — всегда работает в фоне, кнопки нет
     _bybitSyncTimer = setInterval(_bybitSyncTick, 5000);
     _bybitSyncTick();
+
+    // TradFi-цены со сборщика (золото/серебро/платина/палладий/нефть/индексы)
+    setInterval(_tradfiSync, 7000);
+    _tradfiSync();
 
     // ===== Обработчики =====
     document.getElementById('btnRefresh').addEventListener('click',()=>{loadFastData();loadSlowData();});
