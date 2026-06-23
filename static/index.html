@@ -1706,8 +1706,8 @@
       const tradfiClose  = _lastSessionClose(now, true);  // только будни (Пн-Пт)
       if (!cryptoClose && !tradfiClose) return;
 
-      // Для даты сохранения берём будничное закрытие (оно показательнее)
-      const lastClose = tradfiClose || cryptoClose;
+      // Дата-метку берём из крипто-закрытия (торгуется 24/7 — надёжный маркер свежести)
+      const lastClose = cryptoClose || tradfiClose;
       const mskDate = new Date(lastClose.getTime() + 3 * 3600000).toISOString().slice(0, 10);
       const refPrices = {};
 
@@ -1759,8 +1759,17 @@
       ]);
       _bybitPrices = { ...spot, ...linear }; // linear приоритетнее
 
-      // Если референса нет — загрузить из истории Bybit
-      if (!_bybitRefData?.prices || Object.keys(_bybitRefData.prices).length === 0) {
+      // Референс устарел, если его нет ИЛИ его дата не совпадает с датой
+      // последнего закрытия сессии (напр. в localStorage висит пятничный
+      // референс, а сегодня вторник — нужно закрытие понедельника).
+      const _expClose = _lastSessionClose(new Date(), false);
+      const _expDate = _expClose
+        ? new Date(_expClose.getTime() + 3 * 3600000).toISOString().slice(0, 10)
+        : null;
+      const _refStale = !_bybitRefData?.prices
+        || Object.keys(_bybitRefData.prices).length === 0
+        || (_expDate && _bybitRefData.date !== _expDate);
+      if (_refStale) {
         await _fetchBybitHistoricalRef();
       }
 
