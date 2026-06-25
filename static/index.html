@@ -1646,6 +1646,54 @@
       } catch(e) {}
     }
 
+    // ===== MOEX-данные для рублёвых спот-инструментов (утренний аукцион 9:50-10:00) =====
+    // CNYRUBF (фьюч юаня сейчас + закр 19:00), CNY спот закр 19:00, цены 5 инструментов.
+    let _moexData = {};
+
+    async function _moexSync() {
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 8000);
+        const r = await fetch('/api/moex_spot', { signal: ctrl.signal });
+        clearTimeout(t);
+        if (!r.ok) return;
+        const d = await r.json();
+        _moexData = (d && !d.stale) ? d : {};
+        renderFastTable(); renderSlowTable();
+      } catch(e) {}
+    }
+
+    // Рублёвые спот-инструменты → синтетическая «цена спота».
+    // Металлы: (металл$/унц ÷ 31.1035) × (CNYRUBF × USDCNH)
+    // Юань:    CNY_закр(19:00) × (CNYRUBF_сейчас / CNYRUBF_закр)
+    const GRAMS_PER_OZ = 31.1035;
+    const RUBSPOT_MAP = {
+      'GLDRUB_TOM': 'XAUUSD+',
+      'SLVRUB_TOM': 'XAGUSD',
+      'PLTRUB_TOM': 'XPTUSD',
+      'PLDRUB_TOM': 'XPDUSD',
+      'CNYRUB_TOM': null,       // юань считается отдельно
+    };
+
+    function _getRubSpotPrice(row) {
+      const tk = (row.ticker || '').toUpperCase();
+      if (!(tk in RUBSPOT_MAP)) return null;
+      const cnyf = _moexData.cnyf;
+      if (!cnyf) return null;
+
+      if (tk === 'CNYRUB_TOM') {
+        const ref = _moexData.cnyf_ref, cnyRef = _moexData.cny_ref;
+        if (!ref || !cnyRef) return null;
+        return cnyRef * (cnyf / ref);             // синтетический спот юаня
+      }
+      // металлы
+      const worldSym = RUBSPOT_MAP[tk];
+      const usdcnh = _tradfiData['USDCNH'] && _tradfiData['USDCNH'].cur;
+      const metalUsd = _tradfiData[worldSym] && _tradfiData[worldSym].cur;
+      if (!usdcnh || !metalUsd) return null;
+      return (metalUsd / GRAMS_PER_OZ) * (cnyf * usdcnh);
+    }
+
     function _bybitMskNow() {
       const now = new Date();
       const msk = new Date(now.getTime() + 3 * 3600 * 1000);
@@ -1799,6 +1847,11 @@
     // Рассчитывает «Цену спота» для строки таблицы:
     // daily_close × (текущий_bybit / bybit_в_23:49:55)
     function _getSpotPrice(row) {
+      // Рублёвые спот-инструменты (золото/серебро/платина/палладий/юань в ₽) —
+      // отдельная формула через MOEX + мировые металлы.
+      const rub = _getRubSpotPrice(row);
+      if (rub != null) return rub;
+
       const instrObj = allFutures.find(f =>
         f.instrument_uid === row.instrument_id || f.figi === row.instrument_id
       );
@@ -1837,6 +1890,10 @@
     // TradFi-цены со сборщика (золото/серебро/платина/палладий/нефть/индексы)
     setInterval(_tradfiSync, 3000);
     _tradfiSync();
+
+    // MOEX-данные для рублёвых спот-инструментов (юань-фьюч, спот-металлы)
+    setInterval(_moexSync, 3000);
+    _moexSync();
 
     // ===== Обработчики =====
     document.getElementById('btnRefresh').addEventListener('click',()=>{loadFastData();loadSlowData();});
