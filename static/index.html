@@ -2078,7 +2078,8 @@
       br.style.border = rubTabActive ? 'none' : '1px solid var(--border)';
       if(rubTabActive){
         if(rubIds.size===0 && allFutures.length) resolveRubIds();
-        startRubAutoRefresh();
+        loadRubData();          // разовая загрузка сразу при открытии вкладки
+        startRubAutoRefresh();  // и дальше автообновление, если включено
       } else {
         stopRubAutoRefresh();
       }
