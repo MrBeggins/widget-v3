@@ -1688,7 +1688,7 @@
       }
       // металлы
       const worldSym = RUBSPOT_MAP[tk];
-      const usdcnh = _tradfiData['USDCNH+'] && _tradfiData['USDCNH+'].cur;
+      const usdcnh = _tradfiData['USDCNH'] && _tradfiData['USDCNH'].cur;
       const metalUsd = _tradfiData[worldSym] && _tradfiData[worldSym].cur;
       if (!usdcnh || !metalUsd) return null;
       return (metalUsd / GRAMS_PER_OZ) * (cnyf * usdcnh);
