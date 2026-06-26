@@ -429,16 +429,6 @@
     <div id="testResult" style="display:none;" class="test-result"></div>
   </div>
 
-  <!-- Переключатель вкладок аукционов -->
-  <div class="auction-tabs" style="display:flex;gap:8px;margin-bottom:0.7rem;">
-    <button type="button" id="tabBtnAuction" onclick="switchAuctionTab('auction')"
-      style="background:var(--accent);color:#000;font-weight:700;border:none;border-radius:8px;padding:0.4rem 0.9rem;cursor:pointer;">Аукцион</button>
-    <button type="button" id="tabBtnRub" onclick="switchAuctionTab('rub')"
-      style="background:var(--card);color:var(--text);font-weight:600;border:1px solid var(--border);border-radius:8px;padding:0.4rem 0.9rem;cursor:pointer;">Спот ₽</button>
-  </div>
-
-  <!-- Вкладка: обычный аукцион (быстрые + медленные) -->
-  <div id="tabAuction">
   <!-- Two tables side by side -->
   <div class="tables-grid">
     <div class="table-section">
@@ -485,36 +475,6 @@
           </thead>
           <tbody id="slowTableBody">
             <tr><td colspan="7" style="color:var(--muted);">Нажмите «🔄 Медленные» и выберите инструменты</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-  </div><!-- /tabAuction -->
-
-  <!-- Вкладка: рублёвый спот-аукцион 9:50–10:00 -->
-  <div id="tabRub" style="display:none;">
-    <div class="table-section">
-      <div class="table-section-label">
-        💱 <span style="color:var(--accent)">Спот ₽</span>
-        <span style="color:var(--muted);font-weight:normal;font-size:0.72rem;">— утренний аукцион 9:50–10:00 МСК · золото/серебро/платина/палладий/юань</span>
-        <span id="rubTableCount" style="color:var(--muted);font-weight:normal;font-size:0.72rem;"></span>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th data-table="rub" data-sort="name">Актив <span class="sort-icon"></span></th>
-              <th class="num" data-table="rub" data-sort="daily_close">Цена д <span class="sort-icon"></span></th>
-              <th class="num" data-table="rub" data-sort="auction">Цена аукц. <span class="sort-icon"></span></th>
-              <th class="num" data-table="rub" data-sort="deviation">Откл. % <span class="sort-icon"></span></th>
-              <th class="num" data-table="rub" data-sort="lots">Лоты <span class="sort-icon"></span></th>
-              <th class="num" data-table="rub" data-sort="spot">Цена спота <span class="sort-icon"></span></th>
-              <th class="num" data-table="rub" data-sort="calc">Цена сведения <span class="sort-icon"></span></th>
-            </tr>
-          </thead>
-          <tbody id="rubTableBody">
-            <tr><td colspan="7" style="color:var(--muted);">Загрузка…</td></tr>
           </tbody>
         </table>
       </div>
@@ -1969,13 +1929,6 @@
         renderSlowTable();
       });
     });
-    document.querySelectorAll('th[data-table="rub"][data-sort]').forEach(th=>{
-      th.addEventListener('click',()=>{
-        const c=th.dataset.sort;
-        if(rubSortCol===c) rubSortDir=rubSortDir==='asc'?'desc':'asc'; else{rubSortCol=c;rubSortDir=c==='name'?'asc':'desc';}
-        renderRubTable();
-      });
-    });
 
     // ===== Online counter =====
     const _onlineSid = Math.random().toString(36).slice(2);
@@ -2010,88 +1963,12 @@
     }
 
     // ===== Init =====
-    // ===== Вкладка «Спот ₽» (рублёвый аукцион 9:50-10:00) =====
-    const RUB_SPOT_TICKERS = ['GLDRUB_TOM','SLVRUB_TOM','PLTRUB_TOM','PLDRUB_TOM','CNYRUB_TOM'];
-    let rubIds = new Set();
-    let rubRows = [];
-    let rubSortCol = 'name', rubSortDir = 'asc';
-    let autoRubTimer = null;
-    let rubTabActive = false;
-
-    function resolveRubIds(){
-      rubIds.clear();
-      const want = new Set(RUB_SPOT_TICKERS.map(t=>t.toUpperCase()));
-      allFutures.forEach(f=>{
-        if(f.ticker && want.has(f.ticker.toUpperCase())){
-          rubIds.add(f.instrument_uid || f.figi);
-        }
-      });
-    }
-
-    async function loadRubData(skipLoading){
-      const ids=[...rubIds].filter(Boolean);
-      if(!ids.length){ rubRows=[]; renderRubTable(); return; }
-      try{
-        const r=await fetchWithTimeout('/api/orderbook?ids='+encodeURIComponent(ids.join(','))+'&session_id='+encodeURIComponent(SESSION_ID),45000);
-        if(!r.ok) return;
-        const data=await r.json();
-        if(data.auction){ auctionInfo=data.auction; updateAuctionBadge(); }
-        rubRows=data.rows||[];
-        rubRows.forEach(row=>{row.name=namesMap[row.instrument_id]||row.instrument_id;if(!row.ticker&&window._tickerMap)row.ticker=window._tickerMap[row.instrument_id]||'';});
-        renderRubTable(); updateLastUpdate();
-      }catch(e){ /* тихо — вкладка обновится в следующий тик */ }
-    }
-
-    function renderRubTable(){
-      const tbody=document.getElementById('rubTableBody'); if(!tbody) return;
-      if(rubIds.size===0){tbody.innerHTML='<tr><td colspan="7" style="color:var(--muted);">Инструменты не найдены в списке Т-Инвест.</td></tr>';return;}
-      if(!rubRows.length){tbody.innerHTML='<tr><td colspan="7" style="color:var(--muted);">Загрузка…</td></tr>';return;}
-      tbody.innerHTML=doSort(rubRows,rubSortCol,rubSortDir).map(makeRowHtml).join('');
-      updateSortIcons('rub',rubSortCol,rubSortDir);
-      const c=document.getElementById('rubTableCount'); if(c) c.textContent='('+rubRows.length+')';
-    }
-
-    // Рублёвый аукцион идёт 9:50-10:00 МСК (будни) — быстрое обновление в 9:48-10:02.
-    function getRubRefreshInterval(){
-      const now=new Date();
-      const tm=(now.getUTCHours()*60+now.getUTCMinutes()+3*60)%(24*60); // минуты МСК
-      const inAuction = tm>=(9*60+48) && tm<=(10*60+2);
-      return inAuction ? AUTO_REFRESH_INTERVAL_AUCTION : AUTO_REFRESH_INTERVAL_NORMAL;
-    }
-    function startRubAutoRefresh(){
-      stopRubAutoRefresh(); if(!autoRefreshEnabled||rubIds.size===0||!rubTabActive) return;
-      const sched=()=>{autoRubTimer=setTimeout(()=>{loadRubData(true);sched();},getRubRefreshInterval());};
-      loadRubData(true); sched();
-    }
-    function stopRubAutoRefresh(){if(autoRubTimer){clearTimeout(autoRubTimer);autoRubTimer=null;}}
-
-    function switchAuctionTab(name){
-      rubTabActive = (name==='rub');
-      document.getElementById('tabAuction').style.display = rubTabActive ? 'none' : '';
-      document.getElementById('tabRub').style.display = rubTabActive ? '' : 'none';
-      const ba=document.getElementById('tabBtnAuction'), br=document.getElementById('tabBtnRub');
-      ba.style.background = rubTabActive ? 'var(--card)' : 'var(--accent)';
-      ba.style.color = rubTabActive ? 'var(--text)' : '#000';
-      ba.style.border = rubTabActive ? '1px solid var(--border)' : 'none';
-      br.style.background = rubTabActive ? 'var(--accent)' : 'var(--card)';
-      br.style.color = rubTabActive ? '#000' : 'var(--text)';
-      br.style.border = rubTabActive ? 'none' : '1px solid var(--border)';
-      if(rubTabActive){
-        if(rubIds.size===0 && allFutures.length) resolveRubIds();
-        startRubAutoRefresh();
-      } else {
-        stopRubAutoRefresh();
-      }
-    }
-    window.switchAuctionTab = switchAuctionTab;
-
     (async function init(){
       startNotifyPolling();
       _startOnline();
       setLoading(true);
       try{
         await loadFutures();
-        resolveRubIds();   // найти 5 рублёвых спот-инструментов по тикерам
         updateAutoStatusText();
         const hf=fastIds.size>0, hs=slowIds.size>0;
         // Синхронизируем scan_ids на сервер (фоновые потоки знают что сканировать)
