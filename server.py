@@ -84,17 +84,6 @@ _tradfi_updated = 0.0   # время последнего пуша
 TRADFI_PUSH_TOKEN = os.environ.get("TRADFI_PUSH_TOKEN", "tradfi-secret-2026")
 TRADFI_STALE = 120      # сек — данные считаются устаревшими, если сборщик молчит
 
-# ========== MOEX ISS — рублёвые спот-инструменты (для утреннего аукциона 9:50-10:00) ==========
-# CNYRUBF (фьюч юаня), CNYRUB_TOM (спот юаня), и спот-металлы GLD/SLV/PLT/PLD RUB_TOM.
-# Синтетическая «цена спота» считается на клиенте: металлы = металл$/31.1035 × CNYRUBF × USDCNH,
-# юань = закрытие(19:00) × (CNYRUBF_сейчас / CNYRUBF_закр). Закрытие берём в 19:00 МСК.
-_moex_spot = {}         # {"cnyf": x, "cnyf_ref": x, "cny_ref": x, "instruments": {...}}
-_moex_lock = threading.Lock()
-_moex_updated = 0.0
-_moex_ref = {}          # {"date": "YYYY-MM-DD", "cnyf": x, "cny": x} — закрытия 19:00 МСК
-MOEX_STALE = 60         # сек
-MOEX_SPOT_SECIDS = ["GLDRUB_TOM", "SLVRUB_TOM", "PLTRUB_TOM", "PLDRUB_TOM", "CNYRUB_TOM"]
-
 # ========== Список скана муверов + авто-результат ==========
 _scan_list_ids   = []          # {instrument_uid: ...} — инструменты для фонового скана
 _scan_list_lock  = threading.Lock()
@@ -804,10 +793,6 @@ def _start_background_thread():
         _background_scheduled_thread = threading.Thread(target=_background_scheduled_loop, daemon=True)
         _background_scheduled_thread.start()
         logger.info("Scheduled background thread started")
-
-    if not any(t.name == "moex_iss" for t in threading.enumerate()):
-        threading.Thread(target=_moex_loop, name="moex_iss", daemon=True).start()
-        logger.info("MOEX ISS thread started")
 
 
 def _stop_background_thread():
@@ -2065,114 +2050,6 @@ def tradfi_get():
             return jsonify({"prices": {}, "stale": True, "age": round(age, 1)})
         prices = dict(_tradfi_prices)
     return jsonify({"prices": prices, "stale": False, "age": round(age, 1)})
-
-
-# ----- MOEX ISS helpers -----
-def _iss_current(engine, market, board, secid):
-    """Текущая цена инструмента с ISS (LAST или ближайший доступный fallback)."""
-    url = (f"https://iss.moex.com/iss/engines/{engine}/markets/{market}"
-           f"/boards/{board}/securities/{secid}.json?iss.meta=off")
-    try:
-        r = requests.get(url, timeout=8)
-        d = r.json()
-        md_cols = d.get("marketdata", {}).get("columns", [])
-        md_data = d.get("marketdata", {}).get("data", [])
-        sc_cols = d.get("securities", {}).get("columns", [])
-        sc_data = d.get("securities", {}).get("data", [])
-        md = dict(zip(md_cols, md_data[0])) if md_data else {}
-        sc = dict(zip(sc_cols, sc_data[0])) if sc_data else {}
-        for f in ("LAST", "LCLOSEPRICE", "MARKETPRICE", "WAPRICE"):
-            if md.get(f):
-                return float(md[f])
-        if sc.get("PREVPRICE"):
-            return float(sc["PREVPRICE"])
-    except Exception:
-        pass
-    return None
-
-
-def _iss_close_1900(engine, market, secid):
-    """Закрытие инструмента в 19:00 МСК последнего торгового дня (по часовым свечам).
-    Возвращает (price, msk_date) или (None, None)."""
-    end = datetime.now(timezone.utc) + timedelta(hours=3)   # МСК
-    start = end - timedelta(days=4)
-    url = (f"https://iss.moex.com/iss/engines/{engine}/markets/{market}"
-           f"/securities/{secid}/candles.json?iss.meta=off&interval=60"
-           f"&from={start.strftime('%Y-%m-%d')}&till={end.strftime('%Y-%m-%d')}")
-    try:
-        r = requests.get(url, timeout=8)
-        d = r.json()
-        cols = d.get("candles", {}).get("columns", [])
-        rows = d.get("candles", {}).get("data", [])
-        i_close = cols.index("close")
-        i_begin = cols.index("begin")
-        best = None
-        for row in rows:
-            begin_str = str(row[i_begin])       # "YYYY-MM-DD HH:MM:SS" (МСК)
-            # свеча 18:00-19:00; её close = цена на 19:00 (момент закрытия спота)
-            if begin_str.endswith("18:00:00"):
-                best = (float(row[i_close]), begin_str[:10])
-        return best if best else (None, None)
-    except Exception:
-        return None, None
-
-
-def _moex_fetch_once():
-    """Один проход: текущие цены + (раз в день) закрытия 19:00."""
-    global _moex_updated
-    cnyf = _iss_current("futures", "forts", "RFUD", "CNYRUBF")
-    instruments = {}
-    for sec in MOEX_SPOT_SECIDS:
-        last = _iss_current("currency", "selt", "CETS", sec)
-        if last is not None:
-            instruments[sec] = last
-
-    # Референсы 19:00 — обновляем раз в день
-    msk = datetime.now(timezone.utc) + timedelta(hours=3)
-    today = msk.strftime("%Y-%m-%d")
-    with _moex_lock:
-        have_ref = _moex_ref.get("date") == today and _moex_ref.get("cnyf")
-    if not have_ref:
-        cnyf_ref, ref_date = _iss_close_1900("futures", "forts", "CNYRUBF")
-        cny_ref, _ = _iss_close_1900("currency", "selt", "CNYRUB_TOM")
-        if cnyf_ref:
-            with _moex_lock:
-                _moex_ref.clear()
-                _moex_ref.update({"date": ref_date or today, "cnyf": cnyf_ref, "cny": cny_ref})
-
-    with _moex_lock:
-        _moex_spot.clear()
-        _moex_spot.update({
-            "cnyf": cnyf,
-            "cnyf_ref": _moex_ref.get("cnyf"),
-            "cny_ref": _moex_ref.get("cny"),
-            "ref_date": _moex_ref.get("date"),
-            "instruments": instruments,
-        })
-        _moex_updated = time.time()
-
-
-def _moex_loop():
-    while True:
-        try:
-            _moex_fetch_once()
-        except Exception as e:
-            logging.warning("MOEX ISS fetch error: %s", e)
-        time.sleep(15)
-
-
-@app.route("/api/moex_spot")
-def moex_spot_get():
-    """Данные MOEX для синтетики рублёвых спот-инструментов."""
-    now = time.time()
-    with _moex_lock:
-        age = now - _moex_updated
-        if _moex_updated == 0 or age > MOEX_STALE:
-            return jsonify({"stale": True, "age": round(age, 1)})
-        data = dict(_moex_spot)
-    data["stale"] = False
-    data["age"] = round(age, 1)
-    return jsonify(data)
 
 
 @app.route("/api/auction_log")
