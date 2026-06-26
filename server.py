@@ -933,10 +933,6 @@ SPOT_TICKERS = ["SBER", "GAZP", "LKOH", "NVTK", "GMKN", "VTBR", "PLZL",
                 "ROSN", "TATN", "YNDX", "MGNT", "AFLT", "ALRS", "MTSS",
                 "NLMK", "MAGN", "CHMF", "POLY", "PHOR", "IRAO"]
 
-# Рублёвые спот-инструменты (валюты/металлы) для утреннего аукциона 9:50-10:00.
-# В T-Invest API они в разделе Currencies (металлы там классифицированы как валюты).
-RUB_SPOT_TICKERS = ["GLDRUB_TOM", "SLVRUB_TOM", "PLTRUB_TOM", "PLDRUB_TOM", "CNYRUB_TOM"]
-
 # Маппинг: тикер акции → префикс тикера фьючерса на MOEX
 # Фьючи ищутся по вхождению префикса в тикер (SBER → SBERМ25, SBERH25 и т.д.)
 # ПРОВЕРЬ и поправь список под реальные тикеры в T-Invest!
@@ -1121,29 +1117,6 @@ def api_futures():
         logger.info("shares (spot) count=%s", shares_count)
     except Exception as e:
         logger.exception("Error loading shares: %s", e)
-
-    # 3. Загружаем рублёвые спот-инструменты (валюты/металлы) для аукциона 9:50-10:00
-    try:
-        url = f"{base_url}/tinkoff.public.invest.api.contract.v1.InstrumentsService/Currencies"
-        resp = requests.post(url, headers=headers, json={}, timeout=30, verify=False)
-        resp.raise_for_status()
-        data = resp.json()
-        rub_count = 0
-        rub_tickers_upper = [t.upper() for t in RUB_SPOT_TICKERS]
-        for inv in data.get("instruments", []):
-            ticker = inv.get("ticker", "")
-            if ticker.upper() in rub_tickers_upper:
-                items.append({
-                    "figi": inv.get("figi", ""),
-                    "ticker": ticker,
-                    "name": inv.get("name") or ticker,
-                    "instrument_uid": inv.get("uid", "") or inv.get("figi", ""),
-                    "instrument_type": "currency",
-                })
-                rub_count += 1
-        logger.info("rub spot (currency) count=%s", rub_count)
-    except Exception as e:
-        logger.exception("Error loading currencies: %s", e)
 
     logger.info("total instruments=%s (fresh)", len(items))
     _cache_set(cache_key, items, CACHE_TTL_FUTURES)
