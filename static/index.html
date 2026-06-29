@@ -104,9 +104,10 @@
     tr.mover-row { background: rgba(255,200,0,0.07) !important; }
     tr.mover-row td:first-child::after { content: ' 🔥'; font-size: 0.8em; }
     /* Ручной ввод цены сведения */
-    .svod-input { background:transparent; border:none; border-bottom:1px dashed var(--border); color:var(--text); font-size:inherit; font-variant-numeric:tabular-nums; text-align:right; width:6em; padding:0.1rem 0; outline:none; }
-    .svod-input:focus { border-bottom-color:var(--accent); }
-    .svod-input::placeholder { color:var(--muted); }
+    .svod-input, .dc-input { background:transparent; border:none; border-bottom:1px dashed var(--border); color:var(--text); font-size:inherit; font-variant-numeric:tabular-nums; text-align:right; width:6em; padding:0.1rem 0; outline:none; }
+    .svod-input:focus, .dc-input:focus { border-bottom-color:var(--accent); }
+    .svod-input::placeholder, .dc-input::placeholder { color:var(--muted); }
+    .dc-input.dc-override { color:var(--accent); font-weight:600; border-bottom-color:var(--accent); }
     /* Settings panels */
     .settings-panel {
       background: var(--card);
@@ -491,6 +492,7 @@
     const STORAGE_SLOW_IDS   = 'widget_slow_ids_'     + CURRENT_PROFILE;
     const STORAGE_SCAN_IDS   = 'widget_scan_ids_'     + CURRENT_PROFILE;
     const STORAGE_SVOD       = 'widget_svod_prices_'  + CURRENT_PROFILE;
+    const STORAGE_DC         = 'widget_dc_overrides_' + CURRENT_PROFILE;
     const STORAGE_NAMES      = 'damir_futures_names';
     const STORAGE_API_KEYS   = 'widget_api_keys_'     + CURRENT_PROFILE;
     const STORAGE_SETTINGS   = 'widget_user_settings_'+ CURRENT_PROFILE;
@@ -518,6 +520,13 @@
     let slowIds = new Set(JSON.parse(localStorage.getItem(STORAGE_SLOW_IDS) || '[]'));
     let scanIds = new Set(JSON.parse(localStorage.getItem(STORAGE_SCAN_IDS) || '[]'));
     let svodPrices = JSON.parse(localStorage.getItem(STORAGE_SVOD) || '{}'); // {instrument_id: price}
+    let dcOverrides = JSON.parse(localStorage.getItem(STORAGE_DC) || '{}'); // {instrument_id: ручная цена д}
+    // Эффективная «цена д»: ручное переопределение, иначе закрытие с сервера
+    function effDailyClose(row){
+      const o = dcOverrides[row.instrument_id];
+      if (o != null && o > 0) return o;
+      return row.daily_close_price != null ? row.daily_close_price : (row.close_price != null ? row.close_price : null);
+    }
     let namesMap = JSON.parse(localStorage.getItem(STORAGE_NAMES) || '{}');
     let autoRefreshEnabled = true;
     let autoFastTimer = null, autoSlowTimer = null;
@@ -926,9 +935,18 @@
       const name=row.name||row.instrument_id;
       const instrObj=allFutures.find(f=>f.instrument_uid===row.instrument_id||f.figi===row.instrument_id);
       const instrType=instrObj?instrObj.instrument_type:'';
-      const dc=row.daily_close_price!=null?formatPrice(row.daily_close_price,instrType):(row.close_price!=null?formatPrice(row.close_price,instrType):'—');
+      // «Цена д» — редактируемая: показывает закрытие, можно вписать вручную
+      const realDc = row.daily_close_price != null ? row.daily_close_price : (row.close_price != null ? row.close_price : null);
+      const ovDc = dcOverrides[row.instrument_id];
+      const isOvDc = (ovDc != null && ovDc > 0);
+      const effDc = isOvDc ? ovDc : realDc;
+      const dcInputVal = effDc != null ? effDc : '';
+      const dcCell = `<td class="num"><input type="number" class="dc-input${isOvDc?' dc-override':''}" data-id="${row.instrument_id}" data-real="${realDc != null ? realDc : ''}" value="${dcInputVal}" placeholder="—" step="any" title="Закрытие; можно изменить вручную"></td>`;
       const ap = row.auction_price != null ? formatPrice(row.auction_price, instrType) : '—';
-      const dev = row.deviation_pct ?? row.change_pct;
+      // Откл. %: при ручной «цене д» считаем от неё, иначе берём серверное
+      let dev;
+      if (isOvDc && row.auction_price && effDc) dev = Math.round((row.auction_price - effDc) / effDc * 10000) / 100;
+      else dev = row.deviation_pct ?? row.change_pct;
       const dp = dev != null ? (dev > 0 ? '+' + dev : String(dev)) : '—';
       const dc_cls = dev > 0 ? 'pct-positive' : dev < 0 ? 'pct-negative' : 'pct-null';
       const el = row.executed_lots != null ? row.executed_lots : (row.total_lots != null ? row.total_lots : '—');
@@ -949,7 +967,7 @@
       }
       const trAttr = isMover ? ' class="mover-row"' : (rowBg ? ` style="${rowBg}"` : '');
       const svodCell = `<td class="num"><input type="number" class="svod-input" data-id="${row.instrument_id}" value="${svod != null ? svod : ''}" placeholder="—" step="any"></td>`;
-      return `<tr${trAttr}><td>${escapeHtml(name)}</td><td class="num">${dc}</td><td class="num">${ap}</td><td class="num ${dc_cls}">${dp}${dev!=null?'%':''}</td><td class="num">${el}</td><td class="num">${spotStr}</td>${svodCell}</tr>`;
+      return `<tr${trAttr}><td>${escapeHtml(name)}</td>${dcCell}<td class="num">${ap}</td><td class="num ${dc_cls}">${dp}${dev!=null?'%':''}</td><td class="num">${el}</td><td class="num">${spotStr}</td>${svodCell}</tr>`;
     }
     function doSort(rows, col, dir){
       return [...rows].sort((a,b)=>{
@@ -975,8 +993,13 @@
         ic.textContent=th.dataset.sort===col?(dir==='asc'?'▲':'▼'):'';
       });
     }
+    function isEditingCell(tbody){
+      const ae=document.activeElement;
+      return ae && (ae.classList.contains('dc-input')||ae.classList.contains('svod-input')) && tbody.contains(ae);
+    }
     function renderFastTable(){
       const tbody=document.getElementById('fastTableBody');
+      if(isEditingCell(tbody)) return; // не сбрасываем ввод пользователя
       if(fastIds.size===0){tbody.innerHTML='<tr><td colspan="7" style="color:var(--muted);">Нажмите «⚡ Быстрые» и выберите инструменты</td></tr>';return;}
       if(!fastRows.length){tbody.innerHTML='<tr><td colspan="7" style="color:var(--muted);">Загрузка...</td></tr>';return;}
       tbody.innerHTML=doSort(fastRows,fastSortCol,fastSortDir).map(makeRowHtml).join('');
@@ -985,6 +1008,7 @@
     }
     function renderSlowTable(){
       const tbody=document.getElementById('slowTableBody');
+      if(isEditingCell(tbody)) return; // не сбрасываем ввод пользователя
       if(slowIds.size===0){tbody.innerHTML='<tr><td colspan="7" style="color:var(--muted);">Нажмите «🔄 Медленные» и выберите инструменты</td></tr>';return;}
       if(!slowRows.length){tbody.innerHTML='<tr><td colspan="7" style="color:var(--muted);">Загрузка...</td></tr>';return;}
       tbody.innerHTML=doSort(slowRows,slowSortCol,slowSortDir).map(makeRowHtml).join('');
@@ -1448,6 +1472,19 @@
       renderFastTable(); renderSlowTable();
     });
 
+    // Ручной ввод «Цены д» — переопределяет закрытие; пусто или = закрытию → сброс
+    document.addEventListener('change', e => {
+      const inp = e.target.closest('.dc-input');
+      if (!inp) return;
+      const id = inp.dataset.id;
+      const real = inp.dataset.real !== '' ? parseFloat(inp.dataset.real) : null;
+      const val = inp.value !== '' ? parseFloat(inp.value) : null;
+      if (val == null || isNaN(val) || (real != null && Math.abs(val - real) < 1e-9)) delete dcOverrides[id];
+      else dcOverrides[id] = val;
+      try { localStorage.setItem(STORAGE_DC, JSON.stringify(dcOverrides)); } catch(_) {}
+      renderFastTable(); renderSlowTable();
+    });
+
     // Обработка категорий панели скана
     document.addEventListener('click', e => {
       const b = e.target.closest('[data-panel="scan"].category-btn');
@@ -1823,7 +1860,7 @@
           cur = _bybitPrices[entry.bybit];
           ref = _bybitRefData?.prices?.[entry.bybit];
         }
-        const dailyClose = row.daily_close_price || row.close_price;
+        const dailyClose = effDailyClose(row);
         if (!cur || !ref || !dailyClose || ref === 0) return null;
         return dailyClose * (cur / ref);
       }
