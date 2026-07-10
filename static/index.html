@@ -108,6 +108,8 @@
     .svod-input:focus, .dc-input:focus { border-bottom-color:var(--accent); }
     .svod-input::placeholder, .dc-input::placeholder { color:var(--muted); }
     .dc-input.dc-override { color:var(--accent); font-weight:600; border-bottom-color:var(--accent); }
+    .del-row { display:inline-block; color:var(--muted); cursor:pointer; margin-right:0.45rem; font-size:0.8rem; user-select:none; opacity:0.55; transition:color .12s,opacity .12s; }
+    .del-row:hover { color:#f85149; opacity:1; }
     /* Settings panels */
     .settings-panel {
       background: var(--card);
@@ -931,8 +933,9 @@
       if(instrType==='futures') return Math.abs(v)>=1?v.toFixed(2):v.toFixed(4);
       return Math.abs(v)>=1?(v.toFixed(2).replace(/\.?0+$/,'')||v.toFixed(2)):(v.toFixed(4).replace(/\.?0+$/,'')||v.toFixed(4));
     }
-    function makeRowHtml(row){
+    function makeRowHtml(row, tbl){
       const name=row.name||row.instrument_id;
+      const delBtn = tbl ? `<span class="del-row" data-id="${row.instrument_id}" data-tbl="${tbl}" title="Убрать из таблицы">✕</span>` : '';
       const instrObj=allFutures.find(f=>f.instrument_uid===row.instrument_id||f.figi===row.instrument_id);
       const instrType=instrObj?instrObj.instrument_type:'';
       // «Цена д» — редактируемая: показывает закрытие, можно вписать вручную
@@ -967,7 +970,7 @@
       }
       const trAttr = isMover ? ' class="mover-row"' : (rowBg ? ` style="${rowBg}"` : '');
       const svodCell = `<td class="num"><input type="number" class="svod-input" data-id="${row.instrument_id}" value="${svod != null ? svod : ''}" placeholder="—" step="any"></td>`;
-      return `<tr${trAttr}><td>${escapeHtml(name)}</td>${dcCell}<td class="num">${ap}</td><td class="num ${dc_cls}">${dp}${dev!=null?'%':''}</td><td class="num">${el}</td><td class="num">${spotStr}</td>${svodCell}</tr>`;
+      return `<tr${trAttr}><td>${delBtn}${escapeHtml(name)}</td>${dcCell}<td class="num">${ap}</td><td class="num ${dc_cls}">${dp}${dev!=null?'%':''}</td><td class="num">${el}</td><td class="num">${spotStr}</td>${svodCell}</tr>`;
     }
     function doSort(rows, col, dir){
       return [...rows].sort((a,b)=>{
@@ -1002,7 +1005,7 @@
       if(isEditingCell(tbody)) return; // не сбрасываем ввод пользователя
       if(fastIds.size===0){tbody.innerHTML='<tr><td colspan="7" style="color:var(--muted);">Нажмите «⚡ Быстрые» и выберите инструменты</td></tr>';return;}
       if(!fastRows.length){tbody.innerHTML='<tr><td colspan="7" style="color:var(--muted);">Загрузка...</td></tr>';return;}
-      tbody.innerHTML=doSort(fastRows,fastSortCol,fastSortDir).map(makeRowHtml).join('');
+      tbody.innerHTML=doSort(fastRows,fastSortCol,fastSortDir).map(r=>makeRowHtml(r,'fast')).join('');
       updateSortIcons('fast',fastSortCol,fastSortDir);
       const c=document.getElementById('fastTableCount'); if(c) c.textContent='('+fastRows.length+')';
     }
@@ -1011,7 +1014,7 @@
       if(isEditingCell(tbody)) return; // не сбрасываем ввод пользователя
       if(slowIds.size===0){tbody.innerHTML='<tr><td colspan="7" style="color:var(--muted);">Нажмите «🔄 Медленные» и выберите инструменты</td></tr>';return;}
       if(!slowRows.length){tbody.innerHTML='<tr><td colspan="7" style="color:var(--muted);">Загрузка...</td></tr>';return;}
-      tbody.innerHTML=doSort(slowRows,slowSortCol,slowSortDir).map(makeRowHtml).join('');
+      tbody.innerHTML=doSort(slowRows,slowSortCol,slowSortDir).map(r=>makeRowHtml(r,'slow')).join('');
       updateSortIcons('slow',slowSortCol,slowSortDir);
       const c=document.getElementById('slowTableCount'); if(c) c.textContent='('+slowRows.length+')';
     }
@@ -1483,6 +1486,25 @@
       else dcOverrides[id] = val;
       try { localStorage.setItem(STORAGE_DC, JSON.stringify(dcOverrides)); } catch(_) {}
       renderFastTable(); renderSlowTable();
+    });
+
+    // Удаление инструмента из таблицы прямо из строки (крестик ✕)
+    document.addEventListener('click', e => {
+      const del = e.target.closest('.del-row');
+      if (!del) return;
+      const id = del.dataset.id, tbl = del.dataset.tbl;
+      if (tbl === 'fast') {
+        fastIds.delete(id);
+        try { localStorage.setItem(STORAGE_FAST_IDS, JSON.stringify([...fastIds])); } catch(_) {}
+        fastRows = fastRows.filter(r => r.instrument_id !== id);
+        renderFastTable();
+        if (autoRefreshEnabled) { stopFastAutoRefresh(); startFastAutoRefresh(); }
+      } else if (tbl === 'slow') {
+        slowIds.delete(id);
+        try { localStorage.setItem(STORAGE_SLOW_IDS, JSON.stringify([...slowIds])); } catch(_) {}
+        slowRows = slowRows.filter(r => r.instrument_id !== id);
+        renderSlowTable();
+      }
     });
 
     // Обработка категорий панели скана
