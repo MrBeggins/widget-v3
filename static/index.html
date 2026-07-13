@@ -777,6 +777,12 @@
       );
     }
     function startDivergenceMonitor(auction){
+      // Панель расхождения акция-фьюч — только для профиля damir
+      if(CURRENT_PROFILE!=='damir'){
+        if(_divTimer){clearInterval(_divTimer);_divTimer=null;}
+        const p=document.getElementById('divergencePanel');if(p)p.style.display='none';
+        return;
+      }
       const isFut=auction&&auction.futures_auction;
       if(isFut){if(!_divTimer){checkDivergence();_divTimer=setInterval(checkDivergence,5000);}}
       else{if(_divTimer){clearInterval(_divTimer);_divTimer=null;}const p=document.getElementById('divergencePanel');if(p)p.style.display='none';}
