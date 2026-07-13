@@ -992,6 +992,23 @@ def api_spot_prices():
     except Exception as e:
         logger.warning("GetLastPrices failed: %s", e)
 
+    # Во время аукциона берём АУКЦИОННУЮ цену акции из стакана (как у фьючерсов),
+    # чтобы сравнивать открытие акции vs открытие фьючерса. До аукциона сделок нет,
+    # и last_price = вчерашнее закрытие (0%) — сравнивать нечего. Стаканы тянем параллельно.
+    auction_active = _is_auction_time().get("is_any_auction")
+    ob_map = {}
+    if auction_active and uids:
+        try:
+            with ThreadPoolExecutor(max_workers=10) as ex:
+                futs = {ex.submit(_fetch_orderbook, u, base_url, headers): u for u in uids}
+                for f in as_completed(futs):
+                    try:
+                        ob_map[futs[f]] = f.result()
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.warning("spot_prices orderbook batch failed: %s", e)
+
     result = []
     for inst in spot_instruments:
         ticker = inst.get("ticker", "")
@@ -1001,8 +1018,14 @@ def api_spot_prices():
         # Дневное закрытие (кэшируется на 5 мин)
         daily_close = _fetch_daily_close(uid, base_url, headers)
 
+        # На аукционе — % от закрытия по аукционной цене (deviation_pct, тот же расчёт
+        # что и у фьючерса). Вне аукциона — по последней сделке.
+        ob = ob_map.get(uid)
+        auction_price = ob.get("auction_price") if ob else None
         change_pct = None
-        if last_price and daily_close and daily_close != 0:
+        if auction_active and ob and ob.get("deviation_pct") is not None:
+            change_pct = ob.get("deviation_pct")
+        elif last_price and daily_close and daily_close != 0:
             change_pct = round((last_price - daily_close) / daily_close * 100, 2)
 
         result.append({
@@ -1010,8 +1033,10 @@ def api_spot_prices():
             "name": inst.get("name", ticker),
             "instrument_uid": uid,
             "last_price": round(last_price, 4) if last_price else None,
+            "auction_price": round(auction_price, 4) if auction_price else None,
             "daily_close": round(daily_close, 4) if daily_close else None,
             "change_pct": change_pct,
+            "on_auction": bool(auction_active and auction_price),
             "futures_prefix": BLUE_CHIP_FUTURES_MAP.get(ticker.upper(), ticker),
         })
 
