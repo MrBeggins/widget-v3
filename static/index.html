@@ -953,7 +953,8 @@
       const dp = dev != null ? (dev > 0 ? '+' + dev : String(dev)) : '—';
       const dc_cls = dev > 0 ? 'pct-positive' : dev < 0 ? 'pct-negative' : 'pct-null';
       const el = row.executed_lots != null ? row.executed_lots : (row.total_lots != null ? row.total_lots : '—');
-      const isMover = dev != null && Math.abs(dev) >= getMoverThreshold();
+      // Подсветка муверов — только для профиля damir
+      const isMover = CURRENT_PROFILE === 'damir' && dev != null && Math.abs(dev) >= getMoverThreshold();
       // Цена спота = расчётная цена с Bybit (daily_close * текущий/референс)
       const spotPrice = _getSpotPrice(row);
       const spotStr = spotPrice != null ? formatPrice(spotPrice, instrType) : '—';
