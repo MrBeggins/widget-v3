@@ -726,8 +726,8 @@ def _background_scheduled_loop():
     global _background_running
     logger.info("Scheduled background thread started")
 
-    WARMUP_TIMES = {(8, 20)}   # прогрев кэша за 30 мин до аукциона (08:50)
-    SCAN_TIMES   = {(8, 54)}   # скан муверов — заявки в стакане
+    WARMUP_TIMES = {(6, 20)}   # прогрев кэша за 30 мин до аукциона (06:50)
+    SCAN_TIMES   = {(6, 54)}   # скан муверов — заявки в стакане (во время аукциона 06:50-07:00)
 
     _done_warmup: set = set()  # "DD-H:MM" ключи уже выполненных задач
     _done_scan:   set = set()
@@ -1356,7 +1356,7 @@ def _is_auction_time(instrument_type=None):
     
     Расписание аукционов:
     - Акции (shares): 6:50-7:00 (открытие), 18:40-18:45 (закрытие), 18:45-18:50 (частичный)
-    - Фьючерсы (futures): 8:50-9:00 (открытие)
+    - Фьючерсы (futures): 6:50-7:00 (открытие) — с 2026-07-11 вместе с акциями (было 8:50-9:00)
     
     Args:
         instrument_type: 'shares', 'futures' или None (проверяет все аукционы)
@@ -1376,7 +1376,7 @@ def _is_auction_time(instrument_type=None):
     
     # Аукционы для фьючерсов (futures)
     futures_auctions = [
-        {"start": 8 * 60 + 50, "end": 9 * 60, "type": "opening", "name": "Фьючерсы: открытие"},
+        {"start": 6 * 60 + 50, "end": 7 * 60, "type": "opening", "name": "Фьючерсы: открытие"},
     ]
     
     def check_auctions(auctions):
