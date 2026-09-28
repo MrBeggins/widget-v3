@@ -29,7 +29,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # Свечи обновляются отдельно раз в 30 сек — не каждый цикл.
 MAX_CACHED_INSTRUMENTS = 200          # лимит быстрых (активных) инструментов
 MAX_SLOW_INSTRUMENTS = 500            # лимит медленных (tracked) инструментов
-BACKGROUND_INTERVAL_AUCTION = 2      # 2 сек — быстрый поток во время аукциона
+BACKGROUND_INTERVAL_AUCTION = 1      # 1 сек — быстрый поток во время аукциона
 BACKGROUND_INTERVAL_NORMAL = 10      # 10 сек — быстрый поток вне аукциона
 BACKGROUND_SLOW_INTERVAL = 60        # 60 сек — медленный поток всегда
 ACTIVE_INSTRUMENT_TTL = 300          # 5 минут - инструмент считается активным
@@ -917,9 +917,13 @@ def index():
 
 
 # Список акций (спот), которые нужно показывать
-SPOT_TICKERS = ["SBER", "GAZP", "LKOH", "NVTK", "GMKN", "VTBR", "PLZL",
-                "ROSN", "TATN", "YNDX", "MGNT", "AFLT", "ALRS", "MTSS",
-                "NLMK", "MAGN", "CHMF", "POLY", "PHOR", "IRAO"]
+# Все акции индекса МосБиржи (IMOEX) — для просмотра аукционов (состав на 2026-09).
+SPOT_TICKERS = ["AFKS", "AFLT", "ALRS", "BSPB", "CBOM", "CHMF", "CNRU", "DOMRF",
+                "ENPG", "FLOT", "GAZP", "GMKN", "HEAD", "IRAO", "LKOH", "MAGN",
+                "MDMG", "MOEX", "MTSS", "NLMK", "NVTK", "OZON", "PHOR", "PLZL",
+                "POSI", "RAGR", "RENI", "ROSN", "RTKM", "RUAL", "SBER", "SBERP",
+                "SNGS", "SNGSP", "SVCB", "T", "TATN", "TATNP", "TRNFP", "UGLD",
+                "VKCO", "VTBR", "X5", "YDEX"]
 
 # Маппинг: тикер акции → префикс тикера фьючерса на MOEX
 # Фьючи ищутся по вхождению префикса в тикер (SBER → SBERМ25, SBERH25 и т.д.)
@@ -1043,6 +1047,399 @@ def api_spot_prices():
     return jsonify({"stocks": result, "mapping": BLUE_CHIP_FUTURES_MAP})
 
 
+def _build_stock_futures_map(n=2):
+    """{тикер_акции: [{"uid","ticker","exp"}, ...]} — n БЛИЖАЙШИХ квартальных фьючерсов
+    на каждую акцию (по умолчанию 2: ближний 12.26/Z6 и дальний 3.27/H7).
+    Вечный фьючерс (exp 2099) и дальние контракты не попадают — берём только 2 ближайших."""
+    cache = _cache_get("instruments_list") or []
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    by_stock = {}
+    for i in cache:
+        if i.get("instrument_type") != "futures":
+            continue
+        ba = i.get("basic_asset")
+        if not ba:
+            continue
+        exp = (i.get("expiration_date") or "")[:10]
+        if not exp or exp < today or exp[:4] >= "2099":
+            continue  # без даты / истёкший / вечный — пропускаем
+        by_stock.setdefault(ba, []).append((exp, i.get("instrument_uid") or i.get("figi"), i.get("ticker")))
+    out = {}
+    for s, lst in by_stock.items():
+        lst.sort(key=lambda x: x[0])
+        out[s] = [{"uid": u, "ticker": t, "exp": e} for e, u, t in lst[:n]]
+    return out
+
+
+@app.route("/api/auction_scan")
+def api_auction_scan():
+    """Фоновый скан раздвижки акция↔фьючерс во время аукциона.
+    Возвращает пары, где |изменение_акции − изменение_фьючерса| >= threshold (%).
+    Виджет по этим парам сам добавляет фьючерс в «Быстрое обновление»."""
+    token = _get_token_from_request()
+    if not token:
+        return jsonify({"error": "Токен T-Invest не указан."}), 503
+    try:
+        threshold = float(request.args.get("threshold", "0.2"))
+    except ValueError:
+        threshold = 0.2
+    try:
+        min_lots = int(request.args.get("min_lots", "0"))
+    except ValueError:
+        min_lots = 0
+
+    auction = _is_auction_time()
+    if not auction.get("is_any_auction"):
+        return jsonify({"pairs": [], "auction": auction, "threshold": threshold})
+
+    base_url = _get_api_url()
+    headers = _get_headers(token)
+    inst = _cache_get("instruments_list") or []
+    imoex = set(SPOT_TICKERS)
+
+    stock_uid = {
+        i.get("ticker"): (i.get("instrument_uid") or i.get("figi"))
+        for i in inst
+        if i.get("instrument_type") == "shares"
+    }
+
+    # Клиент может прислать конкретный список фьючей (futs=uid,uid,...) — тогда
+    # пары строятся из них (учтены ручные тикеры/вечные/отключённые на клиенте).
+    # Иначе — авто ближний+дальний по всем IMOEX.
+    futs_param = request.args.get("futs", "")
+    pairs = []
+    if futs_param:
+        uid2fut = {(i.get("instrument_uid") or i.get("figi")): i
+                   for i in inst if i.get("instrument_type") == "futures"}
+        for fu in [x for x in futs_param.split(",") if x]:
+            fi = uid2fut.get(fu)
+            if not fi:
+                continue
+            ba = (fi.get("basic_asset") or "").upper()
+            su = stock_uid.get(ba)
+            if not su:
+                continue
+            pairs.append((ba, su, fu, fi.get("ticker")))
+    else:
+        fut_map = _build_stock_futures_map(2)   # ближний + дальний
+        for s in SPOT_TICKERS:
+            if s not in stock_uid or s not in fut_map:
+                continue
+            for fut in fut_map[s]:
+                pairs.append((s, stock_uid[s], fut["uid"], fut["ticker"]))
+    if not pairs:
+        return jsonify({"pairs": [], "auction": auction, "threshold": threshold})
+
+    all_uids = set()
+    for _s, su, fu, _ft in pairs:
+        all_uids.add(su)
+        all_uids.add(fu)
+
+    ob = {}
+    try:
+        with ThreadPoolExecutor(max_workers=16) as ex:
+            futs = {ex.submit(_fetch_orderbook, u, base_url, headers): u for u in all_uids}
+            for f in as_completed(futs):
+                try:
+                    ob[futs[f]] = f.result()[0]
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning("auction_scan orderbook batch failed: %s", e)
+
+    # Акция: изменение по аукционной цене (или последней) — БЕЗ фильтра лотов.
+    def _stock_chg(o):
+        if not o:
+            return None
+        dc = o.get("daily_close_price")
+        px = o.get("auction_price") or o.get("last_price")
+        if px and dc and dc != 0:
+            return round((px - dc) / dc * 100, 2)
+        return None
+
+    # Фьючерс: изменение ТОЛЬКО по аукционной цене (без stale last_price).
+    def _fut_chg(o):
+        if not o:
+            return None
+        dc = o.get("daily_close_price")
+        px = o.get("auction_price")
+        if px and dc and dc != 0:
+            return round((px - dc) / dc * 100, 2)
+        return None
+
+    min_needed = max(1, min_lots)   # 0 лотов на аукционе не показываем никогда
+    # Один фьючерс на акцию — с наибольшей раздвижкой среди ликвидных.
+    best_by_stock = {}
+    for s, su, fu, ft in pairs:
+        sc = _stock_chg(ob.get(su))
+        if sc is None:
+            continue
+        fo = ob.get(fu) or {}
+        fut_lots = fo.get("executed_lots") or 0     # объём, исполняемый НА АУКЦИОНЕ
+        if fut_lots < min_needed:
+            continue  # мало/0 лотов во фьючерсе — не подсвечиваем
+        fc = _fut_chg(fo)
+        if fc is None:
+            continue  # у фьючерса нет аукционной цены — пропускаем
+        div = round(sc - fc, 2)
+        if abs(div) < threshold:
+            continue
+        cand = {
+            "stock": s, "stock_change": sc,
+            "fut_ticker": ft, "fut_uid": fu, "fut_change": fc,
+            "fut_lots": fut_lots, "divergence": div,
+        }
+        cur = best_by_stock.get(su)
+        if cur is None or abs(div) > abs(cur["divergence"]):
+            best_by_stock[su] = cand
+    result = list(best_by_stock.values())
+    result.sort(key=lambda x: abs(x["divergence"]), reverse=True)
+    return jsonify({"pairs": result, "auction": auction, "threshold": threshold})
+
+
+@app.route("/api/mover_scan")
+def api_mover_scan():
+    """Реворк «Мувы»: сканирует ВЫБРАННЫЕ фьючерсы (список скана), считает для каждого
+    отклонение от предыдущего закрытия, отклонение его БАЗОВОГО актива и раздвижку между ними,
+    а также объём, исполняемый на аукционе (лоты).
+
+    Подсветка (highlight=true): |раздвижка| >= threshold И лоты >= min_lots.
+    Доп. фильтр «мувера»: |отклонение фьюча| >= dev (0 = выключен).
+
+    Работает и во время аукциона (цена = auction_price), и вне его (last_price).
+    Базовый актив ищется: 1) среди загруженных бумаг (акция и т.п.) по тикеру,
+    2) в TradFi-сборщике (крипта/товарка) по символу. Если цену базового актива взять
+    неоткуда — раздвижка = null и инструмент НЕ подсвечивается."""
+    token = _get_token_from_request()
+    if not token:
+        return jsonify({"error": "Токен T-Invest не указан."}), 503
+
+    def _f(name, d):
+        try:
+            return float(request.args.get(name, d))
+        except (TypeError, ValueError):
+            return d
+
+    def _i(name, d):
+        try:
+            return int(request.args.get(name, d))
+        except (TypeError, ValueError):
+            return d
+
+    div_threshold = _f("threshold", 3.0)   # порог раздвижки (когда цена базы доступна), %
+    dev_threshold = _f("dev", 3.0)          # порог |отклонения фьюча от закрытия| (когда базы НЕТ), %
+    min_lots      = _i("min_lots", 0)       # мин. объём на аукционе (гейт для обоих путей)
+
+    base_url = _get_api_url()
+    headers  = _get_headers(token)
+    inst     = _cache_get("instruments_list") or []
+
+    # Небиржевые фьючерсы: базовый актив ищем среди НЕ-фьючерсов (акции и т.п.).
+    inst_by_ticker = {
+        (i.get("ticker") or "").upper(): i
+        for i in inst if i.get("instrument_type") != "futures"
+    }
+    uid2fut = {(i.get("instrument_uid") or i.get("figi")): i
+               for i in inst if i.get("instrument_type") == "futures"}
+
+    ids_param = request.args.get("ids", "").strip()
+    if ids_param:
+        fut_uids = [x for x in ids_param.split(",") if x and x in uid2fut]
+    else:
+        # Ничего не выбрано — берём все фьючерсы, у которых есть базовый актив.
+        fut_uids = [u for u, fi in uid2fut.items() if fi.get("basic_asset")]
+
+    if not fut_uids:
+        return jsonify({"movers": [], "count": 0, "highlighted": 0,
+                        "threshold": div_threshold, "min_lots": min_lots,
+                        "dev": dev_threshold, "auction": _is_auction_time()})
+
+    # TradFi-снимок (крипта/товарка) — только если сборщик не молчит.
+    tradfi = {}
+    try:
+        _now = time.time()
+        with _tradfi_lock:
+            if _tradfi_updated and _now - _tradfi_updated <= TRADFI_STALE:
+                tradfi = {(k or "").upper(): v for k, v in _tradfi_prices.items()}
+    except Exception:
+        pass
+
+    # UID стаканов = фьючи + их базовые бумаги (те, что нашлись на бирже).
+    basic_uid_by_fut = {}
+    ob_ids = set()
+    for fu in fut_uids:
+        ob_ids.add(fu)
+        ba = (uid2fut[fu].get("basic_asset") or "").upper()
+        bi = inst_by_ticker.get(ba)
+        if bi:
+            bu = bi.get("instrument_uid") or bi.get("figi")
+            basic_uid_by_fut[fu] = bu
+            ob_ids.add(bu)
+
+    ob = {}
+    try:
+        with ThreadPoolExecutor(max_workers=16) as ex:
+            fmap = {ex.submit(_fetch_orderbook, u, base_url, headers): u for u in ob_ids}
+            for f in as_completed(fmap):
+                try:
+                    ob[fmap[f]] = f.result()[0]
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning("mover_scan orderbook batch failed: %s", e)
+
+    def _chg(o):
+        """Отклонение от предыдущего закрытия: по аукционной цене, иначе по последней."""
+        if not o:
+            return None
+        dc = o.get("daily_close_price")
+        px = o.get("auction_price") or o.get("last_price")
+        if px and dc and dc != 0:
+            return round((px - dc) / dc * 100, 2)
+        return None
+
+    def _tradfi_change(ba):
+        for key in (ba, ba + "USDT", ba + "USD", ba.replace("USD", "")):
+            e = tradfi.get(key)
+            if e and e.get("cur") and e.get("ref"):
+                return round((e["cur"] - e["ref"]) / e["ref"] * 100, 2)
+        return None
+
+    movers = []
+    for fu in fut_uids:
+        fi = uid2fut[fu]
+        fo = ob.get(fu) or {}
+        fdev = _chg(fo)
+        if fdev is None:
+            continue
+        lots = fo.get("executed_lots") or 0
+        ba = (fi.get("basic_asset") or "").upper()
+
+        bchg, bsrc = None, None
+        bu = basic_uid_by_fut.get(fu)
+        if bu:
+            bchg = _chg(ob.get(bu))
+            if bchg is not None:
+                bsrc = "spot"
+        if bchg is None and tradfi:
+            bchg = _tradfi_change(ba)
+            if bchg is not None:
+                bsrc = "tradfi"
+
+        div = round(fdev - bchg, 2) if bchg is not None else None
+        # Два пути подсветки:
+        #  • есть цена базы → по раздвижке (|Δфьюча − Δбазы| ≥ threshold);
+        #  • базы нет → по отклонению фьюча от закрытия (|Δфьюча| ≥ dev).
+        # Лоты проверяются ВСЕГДА: 0 лотов на аукционе = фьюч неинтересен (минимум 1).
+        lots_ok = lots >= max(1, min_lots)
+        if bchg is not None:
+            highlight = (abs(div) >= div_threshold and lots_ok)
+        else:
+            highlight = (dev_threshold > 0 and abs(fdev) >= dev_threshold and lots_ok)
+
+        movers.append({
+            "instrument_id": fu,
+            "name": fi.get("name") or fi.get("ticker") or fu[:12],
+            "ticker": fi.get("ticker", ""),
+            "basic_asset": ba,
+            "last_price": fo.get("auction_price") or fo.get("last_price"),
+            "daily_close_price": fo.get("daily_close_price"),
+            "change_pct": fdev,
+            "direction": "up" if fdev > 0 else "down",
+            "lots": lots,
+            "basic_change_pct": bchg,
+            "basic_source": bsrc,
+            "divergence_pct": abs(div) if div is not None else None,
+            "divergence_signed": div,
+            "highlight": bool(highlight),
+        })
+
+    # Подсвеченные — вперёд, затем по величине раздвижки, затем по движению фьюча.
+    movers.sort(key=lambda x: (x["highlight"], x.get("divergence_pct") or 0, abs(x["change_pct"])),
+                reverse=True)
+    return jsonify({
+        "movers": movers,
+        "count": len(movers),
+        "highlighted": sum(1 for m in movers if m["highlight"]),
+        "threshold": div_threshold,
+        "min_lots": min_lots,
+        "dev": dev_threshold,
+        "auction": _is_auction_time(),
+    })
+
+
+@app.route("/api/mini_signals")
+def api_mini_signals():
+    """Подсветка цены аукциона миников: раздвижка миник↔основной по отклонению
+    от предыдущего закрытия.
+
+    Query:
+        threshold — порог раздвижки в % (default 0.3)
+        pairs     — miniUid:mainUid,miniUid:mainUid,... (пары строит клиент из allFutures)
+
+    Для каждой пары: dev = (auction_price или last_price − daily_close)/daily_close·100
+    у миника и у основного; divergence = dev_mini − dev_main.
+    highlight = обе цены есть И |divergence| >= threshold."""
+    token = _get_token_from_request()
+    if not token:
+        return jsonify({"error": "Токен T-Invest не указан."}), 503
+    try:
+        threshold = float(request.args.get("threshold", "0.3"))
+    except ValueError:
+        threshold = 0.3
+
+    pairs, uids = [], set()
+    for chunk in request.args.get("pairs", "").split(","):
+        chunk = chunk.strip()
+        if ":" not in chunk:
+            continue
+        mini, main = (p.strip() for p in chunk.split(":", 1))
+        if mini and main:
+            pairs.append((mini, main))
+            uids.add(mini)
+            uids.add(main)
+    if not pairs:
+        return jsonify({"signals": {}, "threshold": threshold,
+                        "auction": _is_auction_time()})
+
+    base_url = _get_api_url()
+    headers = _get_headers(token)
+    ob = {}
+    try:
+        with ThreadPoolExecutor(max_workers=16) as ex:
+            fm = {ex.submit(_fetch_orderbook, u, base_url, headers): u for u in uids}
+            for f in as_completed(fm):
+                try:
+                    ob[fm[f]] = f.result()[0]
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.warning("mini_signals orderbook batch failed: %s", e)
+
+    def _dev(o):
+        if not o:
+            return None
+        dc = o.get("daily_close_price")
+        px = o.get("auction_price") or o.get("last_price")
+        if px and dc and dc != 0:
+            return round((px - dc) / dc * 100, 2)
+        return None
+
+    signals = {}
+    for mini, main in pairs:
+        dm = _dev(ob.get(mini))
+        dM = _dev(ob.get(main))
+        div = round(dm - dM, 2) if (dm is not None and dM is not None) else None
+        signals[mini] = {
+            "dev_mini": dm,
+            "dev_main": dM,
+            "divergence": div,
+            "highlight": bool(div is not None and abs(div) >= threshold),
+        }
+    return jsonify({"signals": signals, "threshold": threshold,
+                    "auction": _is_auction_time()})
+
+
 @app.route("/api/stats")
 def api_stats():
     """Статистика запросов и кэша за последние 5 минут."""
@@ -1102,32 +1499,42 @@ def api_futures():
                 "name": inv.get("name") or inv.get("ticker", ""),
                 "instrument_uid": inv.get("uid", "") or inv.get("figi", ""),
                 "instrument_type": "futures",
+                "basic_asset": inv.get("basicAsset", ""),      # тикер базового актива
+                "expiration_date": inv.get("expirationDate", ""),  # для выбора ближнего контракта
             })
         logger.info("futures count=%s", len(items))
     except Exception as e:
         logger.exception("Error loading futures: %s", e)
 
-    # 2. Загружаем только избранные акции (спот)
+    # 2. Загружаем акции: индекс IMOEX + все, что являются базовым активом фьючерсов
     try:
+        # тикеры-базовые-активы всех загруженных фьючерсов (чтобы подтянуть их акции)
+        stock_basics = {
+            (f.get("basic_asset") or "").upper()
+            for f in items
+            if f.get("instrument_type") == "futures" and f.get("basic_asset")
+        }
+        spot_set = {t.upper() for t in SPOT_TICKERS}
+        want = spot_set | stock_basics
         url = f"{base_url}/tinkoff.public.invest.api.contract.v1.InstrumentsService/Shares"
         resp = requests.post(url, headers=headers, json={}, timeout=30, verify=False)
         resp.raise_for_status()
         data = resp.json()
         shares_count = 0
-        spot_tickers_upper = [t.upper() for t in SPOT_TICKERS]
         for inv in data.get("instruments", []):
             ticker = inv.get("ticker", "")
-            # Только акции из списка SPOT_TICKERS
-            if ticker.upper() in spot_tickers_upper:
+            tu = ticker.upper()
+            if tu in want:
                 items.append({
                     "figi": inv.get("figi", ""),
                     "ticker": ticker,
                     "name": inv.get("name") or ticker,
                     "instrument_uid": inv.get("uid", "") or inv.get("figi", ""),
                     "instrument_type": "shares",
+                    "in_index": tu in spot_set,   # входит в индекс МосБиржи
                 })
                 shares_count += 1
-        logger.info("shares (spot) count=%s", shares_count)
+        logger.info("shares count=%s (IMOEX + фьюч-базы)", shares_count)
     except Exception as e:
         logger.exception("Error loading shares: %s", e)
 
@@ -1394,18 +1801,27 @@ def _is_auction_time(instrument_type=None):
     now_msk = now_utc + moscow_offset
     
     time_minutes = now_msk.hour * 60 + now_msk.minute
-    
-    # Аукционы для акций (shares)
-    shares_auctions = [
-        {"start": 6 * 60 + 50, "end": 7 * 60, "type": "opening", "name": "Акции: открытие"},
-        {"start": 18 * 60 + 40, "end": 18 * 60 + 45, "type": "closing", "name": "Акции: закрытие"},
-        {"start": 18 * 60 + 45, "end": 18 * 60 + 50, "type": "partial", "name": "Акции: частичный"},
-    ]
-    
-    # Аукционы для фьючерсов (futures)
-    futures_auctions = [
-        {"start": 6 * 60 + 50, "end": 7 * 60, "type": "opening", "name": "Фьючерсы: открытие"},
-    ]
+    is_weekend = now_msk.weekday() >= 5   # 5=сб, 6=вс
+
+    if is_weekend:
+        # Выходные: единый аукцион открытия 9:50-10:00 для акций и фьючерсов
+        shares_auctions = [
+            {"start": 9 * 60 + 50, "end": 10 * 60, "type": "opening", "name": "Акции: открытие (выходной)"},
+        ]
+        futures_auctions = [
+            {"start": 9 * 60 + 50, "end": 10 * 60, "type": "opening", "name": "Фьючерсы: открытие (выходной)"},
+        ]
+    else:
+        # Будни
+        shares_auctions = [
+            {"start": 6 * 60 + 50, "end": 7 * 60, "type": "opening", "name": "Акции: открытие"},
+            {"start": 18 * 60 + 40, "end": 18 * 60 + 45, "type": "closing", "name": "Акции: закрытие"},
+            {"start": 18 * 60 + 45, "end": 18 * 60 + 50, "type": "partial", "name": "Акции: частичный"},
+            {"start": 18 * 60 + 55, "end": 19 * 60, "type": "closing_final", "name": "Акции: аукцион закрытия"},
+        ]
+        futures_auctions = [
+            {"start": 6 * 60 + 50, "end": 7 * 60, "type": "opening", "name": "Фьючерсы: открытие"},
+        ]
     
     def check_auctions(auctions):
         for auction in auctions:
@@ -1895,9 +2311,9 @@ def _fetch_orderbook(instrument_id, base_url, headers, depth=50):
                     instrument_id, auction_price or 0, executed_lots, imbalance, 
                     imbalance_direction or 'none', len(bids))
         
-        # Кэш на 2 секунды; во время аукциона не кэшируем пустой стакан (нет цены)
+        # Кэш на 1 секунду; во время аукциона не кэшируем пустой стакан (нет цены)
         if not (_is_auction_time().get("is_any_auction") and result.get("auction_price") is None):
-            _cache_set(cache_key, result, 2)
+            _cache_set(cache_key, result, 1)
         return result, False
     except Exception as e:
         logger.warning("get_orderbook %s: %s", instrument_id, e)
