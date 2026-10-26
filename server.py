@@ -1007,7 +1007,7 @@ def api_spot_prices():
                 futs = {ex.submit(_fetch_orderbook, u, base_url, headers): u for u in uids}
                 for f in as_completed(futs):
                     try:
-                        ob_map[futs[f]] = f.result()
+                        ob_map[futs[f]] = f.result()[0]   # _fetch_orderbook -> (data, cached)
                     except Exception:
                         pass
         except Exception as e:
@@ -2699,11 +2699,38 @@ def api_mover_scan_result():
     return jsonify({"result": result})
 
 
+def _access_log(resp):
+    """Access-лог (IP, метод, путь, статус) — waitress сам его не пишет, а по нему ловим клиентов."""
+    try:
+        path = request.full_path.rstrip("?")
+        if len(path) > 200:
+            path = path[:200] + "…"
+        logger.info('%s "%s %s" %s', request.remote_addr, request.method, path, resp.status_code)
+    except Exception:
+        pass
+    return resp
+
+
 def main():
     port = int(os.environ.get("PORT", "5003"))
     sandbox = "sandbox" if os.environ.get("SANDBOX", "1").strip() in ("1", "true", "yes") else "prod"
     logger.info("Starting server port=%s mode=%s", port, sandbox)
-    app.run(host="0.0.0.0", port=port, debug=False)
+    try:
+        from waitress import serve
+    except ImportError:
+        logger.warning("waitress не установлен — запускаю dev-сервер Flask")
+        app.run(host="0.0.0.0", port=port, debug=False)
+        return
+    # Прод-сервер вместо dev-сервера Flask. Один процесс — общий кэш и фоновые потоки
+    # работают как раньше; пул потоков; брошенные клиентами соединения закрываются
+    # через channel_timeout (dev-сервер держал их вечно — копились сотнями).
+    app.after_request(_access_log)
+    serve(app, host="0.0.0.0", port=port,
+          threads=48,              # параллельные запросы (опросы раз в 1с от нескольких юзеров)
+          channel_timeout=60,      # закрыть соединение после 60с тишины (запрос в работе не рвётся)
+          connection_limit=500,
+          asyncore_use_poll=True,  # poll вместо select — без потолка в 1024 дескриптора
+          ident="widget")
 
 
 if __name__ == "__main__":
